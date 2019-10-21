@@ -33,8 +33,8 @@ if ($virt) {
 	foreach my $f (&apache::find_directive_struct("FilesMatch", $vconf)) {
 		next if ($f->{'words'}->[0] ne '\.php$');
 		foreach my $h (&apache::find_directive("SetHandler", $f->{'members'})) {
-			if ($h eq "proxy:fcgi://localhost:$fport" ||
-			    $h eq "proxy:fcgi:$fsock") {
+			if ($h =~ /proxy:fcgi:\/\/localhost/ ||
+			    $h =~ /proxy:fcgi:/) {
 				return 'fpm';
 				}
 			}
@@ -75,6 +75,16 @@ $p || return "Virtual server does not have a website";
 local $tmpl = &get_template($d->{'template'});
 local $oldmode = &get_domain_php_mode($d);
 
+# Work out the default PHP version for FPM
+if ($mode eq "fpm" && !$d->{'php_fpm_version'}) {
+	local @fpms = grep { !$_->{'err'} } &list_php_fpm_configs();
+	@fpms || &error("No FPM versions found!");
+	my $defconf = $tmpl->{'web_phpver'} ?
+		&get_php_fpm_config($tmpl->{'web_phpver'}) : undef;
+	$defconf ||= $fpms[0];
+	$d->{'php_fpm_version'} = $defconf->{'shortversion'};
+	}
+
 if ($mode eq "mod_php" && $oldmode ne "mod_php") {
 	# Save the PHP version for later recovery
 	local $oldver = &get_domain_php_version($d, $oldmode);
@@ -103,7 +113,6 @@ local $etc = "$d->{'home'}/etc";
 if (!-d $etc) {
 	&make_dir_as_domain_user($d, $etc, 0755);
 	}
-local $defver = $vers[0]->[0];
 foreach my $ver (@vers) {
 	# Create separate .ini file for each PHP version, if missing
 	local $subs_ini = $subs_ini{$ver->[0]};
@@ -819,7 +828,7 @@ if ($apache::httpd_modules{'mod_fcgid'}) {
 	# Check for Apache fcgi module
 	push(@rv, "fcgid");
 	}
-if (&get_php_fpm_config()) {
+if (&get_php_fpm_config($d)) {
 	# Check for php-fpm install
 	push(@rv, "fpm");
 	}
@@ -832,29 +841,32 @@ return @rv;
 sub list_available_php_versions
 {
 local ($d, $mode) = @_;
+if ($d) {
+	$mode ||= &get_domain_php_mode($d);
+	}
 &require_apache();
 
-# In FPM mode, only the PHP version run by the FPM package can be used
+# In FPM mode, only the versions for which packages are installed can be used
 if ($mode eq "fpm") {
-	my $conf = &get_php_fpm_config();
-	my $ver = $conf->{'version'} || 5;
-	$ver =~ s/^(\d+\.\d+)\..*/$1/;	# Reduce version to 5.x
-	my $cmd = &php_command_for_version($ver);
-	if (!$cmd && $ver =~ /^5\./) {
-		# Try just PHP version 5
-		$ver = 5;
-		$cmd = &php_command_for_version($ver);
+	my @rv;
+	foreach my $conf (grep { !$_->{'err'} } &list_php_fpm_configs()) {
+		my $ver = $conf->{'shortversion'};
+		my $cmd = &php_command_for_version($ver);
+		if (!$cmd && $ver =~ /^5\./) {
+			# Try just PHP version 5
+			$ver = 5;
+			$cmd = &php_command_for_version($ver);
+			}
+		$cmd ||= &has_command("php");
+		if ($cmd) {
+			push(@rv, [ $ver, $cmd ]);
+			}
 		}
-	$cmd ||= &has_command("php");
-	if ($cmd) {
-		return ([ $ver, $cmd ]);
-		}
-	return ( );
+	return @rv;
 	}
 
 if ($d) {
 	# If the domain is using mod_php, we can only use one version
-	$mode ||= &get_domain_php_mode($d);
 	if ($mode eq "mod_php") {
 		my $v = &get_apache_mod_php_version();
 		if ($v) {
@@ -961,6 +973,9 @@ return $php_command_for_version_cache{$v};
 sub get_php_version
 {
 local ($cmd, $d) = @_;
+if (exists($get_php_version_cache{$cmd})) {
+	return $get_php_version_cache{$cmd};
+	}
 if ($cmd !~ /^\//) {
 	local ($phpn) = grep { $_->[0] == $cmd }
 			     &list_available_php_versions($d);
@@ -970,15 +985,20 @@ if ($cmd !~ /^\//) {
 		($phpn) = grep { $_->[0] >= $cmd }
                              &list_available_php_versions($d);
 		}
-	return undef if (!$phpn);
+	if (!$phpn) {
+		$get_php_version_cache{$cmd} = undef;
+		return undef;
+		}
 	$cmd = $phpn->[1] || &has_command("php$cmd") || &has_command("php");
 	}
 &clean_environment();
 local $out = &backquote_command("$cmd -v 2>&1 </dev/null");
 &reset_environment();
 if ($out =~ /PHP\s+([0-9\.]+)/) {
+	$get_php_version_cache{$cmd} = $1;
 	return $1;
 	}
+$get_php_version_cache{$cmd} = undef;
 return undef;
 }
 
@@ -1000,8 +1020,8 @@ local $conf = &apache::get_config();
 local ($virt, $vconf) = &get_apache_virtual($d->{'dom'}, $d->{'web_port'});
 return ( ) if (!$virt);
 local $mode = &get_domain_php_mode($d);
-if ($mode eq "mod_php" || $mode eq "fpm") {
-	# All are run as version from Apache mod or FPM pool
+if ($mode eq "mod_php") {
+	# All are run as version from Apache module
 	local @avail = &list_available_php_versions($d, $mode);
 	if (@avail) {
 		return ( { 'dir' => &public_html_dir($d),
@@ -1011,6 +1031,13 @@ if ($mode eq "mod_php" || $mode eq "fpm") {
 	else {
 		return ( );
 		}
+	}
+elsif ($mode eq "fpm") {
+	# Version is store in the domain's config
+	# XXX get from the actual port
+	return ( { 'dir' => &public_html_dir($d),
+		   'version' => $d->{'php_fpm_version'},
+		   'mode' => $mode } );
 	}
 
 # Find directories with either FCGIWrapper or AddType directives, and check
@@ -1051,11 +1078,11 @@ if ($p && $p ne 'web') {
 			    $d, $dir, $ver);
 	}
 elsif (!$p) {
-	return "Virtual server does not have a website";
+	return 0;
 	}
 &require_apache();
 local $mode = &get_domain_php_mode($d);
-return 0 if ($mode eq "mod_php" || $mode eq "fpm");
+return 0 if ($mode eq "mod_php");
 local @ports = ( $d->{'web_port'},
 		 $d->{'ssl'} ? ( $d->{'web_sslport'} ) : ( ) );
 local $any = 0;
@@ -1067,6 +1094,21 @@ foreach my $p (@ports) {
 	next if (!$virt);
 	$pfound++;
 
+	# In FPM mode, just update the proxy path
+	if ($mode eq "fpm") {
+		# Remove the old version pool and create a new one if needed.
+		# Since it will be on the same port, no Apache changes
+		# are needed.
+		if ($ver ne $d->{'php_fpm_version'}) {
+			&delete_php_fpm_pool($d);
+			$d->{'php_fpm_version'} = $ver;
+			&save_domain($d);
+			&create_php_fpm_pool($d);
+			}
+		$any++;
+		next;
+		}
+
 	# Check for an existing <Directory> block
 	local @dirs = &apache::find_directive_struct("Directory", $vconf);
 	local ($dirstr) = grep { $_->{'words'}->[0] eq $dir } @dirs;
@@ -1077,7 +1119,7 @@ foreach my $p (@ports) {
 		if ($mode eq "cgi") {
 			local @types = &apache::find_directive(
 				"AddType", $dirstr->{'members'});
-			@types = grep { $_ !~ /^application\/x-httpd-php[45]/ }
+			@types = grep { $_ !~ /^application\/x-httpd-php[57]/ }
 				      @types;
 			foreach my $v (&list_available_php_versions($d)) {
 				push(@types, "application/x-httpd-php$v->[0] ".
@@ -1138,7 +1180,7 @@ foreach my $p (@ports) {
 				" ".&get_allowed_options_list() : "";
 		local @lines = (
 			"<Directory $dir>",
-			"Options +Indexes +IncludesNOEXEC +SymLinksifOwnerMatch +ExecCGI",
+			"Options +IncludesNOEXEC +SymLinksifOwnerMatch +ExecCGI",
 			"allow from all",
 			"AllowOverride All".$olist,
 			@phplines,
@@ -1204,25 +1246,6 @@ if ($dirstr) {
 	return 1;
 	}
 return 0;
-}
-
-# cleanup_php_cgi_processes()
-# Finds and kills and php-cgi, php4-cgi and php5-cgi processes which are
-# orphans (owned by init). This can happen if they are not killed when Apache
-# is restarted.
-sub cleanup_php_cgi_processes
-{
-if (&foreign_check("proc") && $config{'web'}) {
-	&foreign_require("proc");
-	local @procs = &proc::list_processes();
-	local @cgis = grep { $_->{'args'} =~ /^\S+php(4|5|)\-cgi/ &&
-			     $_->{'ppid'} == 1 } @procs;
-	foreach my $p (@cgis) {
-		kill('KILL', $p->{'pid'});
-		}
-	return scalar(@cgis);
-	}
-return -1;
 }
 
 # list_domain_php_inis(&domain, [force-mode])
@@ -1291,6 +1314,8 @@ sub get_global_php_ini
 local ($ver, $mode) = @_;
 local $nodotv = $ver;
 $nodotv =~ s/\.//g;
+local $shortv = $ver;
+$shortv =~ s/^(\d+\.\d+)\..*$/$1/g;
 foreach my $i ("/opt/rh/php$nodotv/root/etc/php.ini",
 	       "/opt/rh/php$nodotv/lib/php.ini",
 	       "/opt/remi/php$nodotv/root/etc/php.ini",
@@ -1299,11 +1324,17 @@ foreach my $i ("/opt/rh/php$nodotv/root/etc/php.ini",
 	       $mode eq "mod_php" ? ("/etc/php$ver/apache/php.ini",
 				     "/etc/php$ver/apache2/php.ini",
 				     "/etc/php$nodotv/apache/php.ini",
-                                     "/etc/php$nodotv/apache2/php.ini")
+                                     "/etc/php$nodotv/apache2/php.ini",
+				     "/etc/php$shortv/apache/php.ini",
+                                     "/etc/php$shortv/apache2/php.ini",
+				    )
 				  : ("/etc/php$ver/cgi/php.ini",
 				     "/etc/php$nodotv/cgi/php.ini",
+				     "/etc/php$shortv/cgi/php.ini",
 				     "/etc/php/$ver/cgi/php.ini",
-				     "/etc/php/$nodotv/cgi/php.ini"),
+				     "/etc/php/$nodotv/cgi/php.ini",
+				     "/etc/php/$shortv/cgi/php.ini",
+				    ),
 	       "/opt/csw/php$ver/lib/php.ini",
 	       "/usr/local/lib/php.ini",
 	       "/usr/local/etc/php.ini",
@@ -1366,7 +1397,7 @@ if ($mode eq "fcgid") {
 	}
 elsif ($mode eq "fpm") {
 	# Set in pool config file
-	my $conf = &get_php_fpm_config();
+	my $conf = &get_php_fpm_config($d);
 	return -1 if (!$conf);
 	my $file = $conf->{'dir'}."/".$d->{'id'}.".conf";
 	my $lref = &read_file_lines($file, 1);
@@ -1448,7 +1479,7 @@ if ($mode eq "fcgid") {
 	}
 elsif ($mode eq "fpm") {
 	# Update in FPM pool file
-	my $conf = &get_php_fpm_config();
+	my $conf = &get_php_fpm_config($d);
 	return 0 if (!$conf);
 	my $file = $conf->{'dir'}."/".$d->{'id'}.".conf";
 	return 0 if (!-r $file);
@@ -1462,7 +1493,7 @@ elsif ($mode eq "fpm") {
 		}
 	&flush_file_lines($file);
 	&unlock_file($file);
-	&register_post_action(\&restart_php_fpm_server);
+	&register_post_action(\&restart_php_fpm_server, $conf);
 	return 1;
 	}
 else {
@@ -1647,72 +1678,147 @@ if ($ver) {
 	}
 }
 
-# get_php_fpm_config()
-# Returns a hash ref with details of the system's php-fpm configuration. Assumes
-# use of standard packages.
+# get_php_fpm_config([version|&domain])
+# Returns the first valid FPM config
 sub get_php_fpm_config
 {
+my ($ver) = @_;
+if (ref($ver)) {
+	$ver = $ver->{'php_fpm_version'};
+	}
+my @confs = grep { !$_->{'err'} } &list_php_fpm_configs();
+if ($ver) {
+	@confs = grep { $_->{'version'} eq $ver ||
+			$_->{'shortversion'} eq $ver } @confs;
+	}
+return @confs ? $confs[0] : undef;
+}
+
+# list_php_fpm_configs()
+# Returns hash refs with details of the system's php-fpm configurations. Assumes
+# use of standard packages.
+sub list_php_fpm_configs
+{
 if ($php_fpm_config_cache) {
-	return $php_fpm_config_cache;
+	return @$php_fpm_config_cache;
 	}
-my $rv = { };
 
-# Config directory for per-domain pool files
-foreach my $cdir ("/etc/php-fpm.d", "/etc/php*/fpm/pool.d",
-		  "/etc/php/*/fpm/pool.d") {
-	my ($realdir) = glob($cdir);
-	if ($realdir && -d $realdir) {
-		$rv->{'dir'} = $realdir;
-		last;
+# What version packages are installed?
+&foreign_require("software");
+my @rv;
+my %donever;
+foreach my $pname ("php-fpm", "php5-fpm", "php7-fpm",
+		   (map { my $v = $_; $v =~ s/\.//g;
+			  ("php$v-php-fpm", "php$v-fpm",
+			   "rh-php$v-php-fpm", "php$_-fpm") }
+		        @all_possible_php_versions)) {
+	my @pinfo = &software::package_info($pname);
+	next if (!@pinfo || !$pinfo[0]);
+
+	# The php-fpm package on Ubuntu is just a meta-package
+	if ($pname eq "php-fpm" && $pinfo[3] eq "all" &&
+	    $gconfig{'os_type'} eq 'debian-linux') {
+		next;
 		}
-	}
-if (!$rv->{'dir'}) {
-	return wantarray ? ( undef, $text{'php_fpmnodir'} ) : undef;
-	}
 
-# Init script
-&foreign_require("init");
-my @nodot = map { my $u = $_; $u =~ s/\.//g; $u } @all_possible_php_versions;
-foreach my $init ("php-fpm", "php5-fpm", "php7-fpm",
-		  (map { "php${_}-fpm" } @all_possible_php_versions),
-		  (map { "rh-php${_}-php-fpm" } @nodot),
-		  (map { "php${_}-php-fpm" } @nodot)) {
-	my $st = &init::action_status($init);
-	if ($st) {
-		$rv->{'init'} = $init;
-		$rv->{'enabled'} = $init > 1;
-		last;
+	# Normalize the version
+	my $rv = { 'package' => $pname };
+	$rv->{'version'} = $pinfo[4];
+	$rv->{'version'} =~ s/\-.*$//;
+	$rv->{'version'} =~ s/\+.*$//;
+	$rv->{'version'} =~ s/^\d+://;
+	next if ($donever{$rv->{'version'}}++);
+	$rv->{'shortversion'} = $rv->{'version'};
+	$rv->{'shortversion'} =~ s/^(\d+\.\d+)\..*/$1/;  # Reduce version to 5.x
+	if (($pname eq "php-fpm" || $pname eq "php5-fpm") &&
+	    $rv->{'shortversion'} =~ /^5/) {
+		# For historic reasons, we just use the version number '5' for
+		# the first PHP 5.x version on the system.
+		$rv->{'shortversion'} = 5;
 		}
-	}
-if (!$rv->{'init'}) {
-	return wantarray ? ( undef, $text{'php_fpmnoinit2'} ) : undef;
-	}
+	$rv->{'pkgversion'} = $rv->{'shortversion'};
+	$rv->{'pkgversion'} =~ s/\.//g;
+	push(@rv, $rv);
 
-# Apache modules
-if ($config{'web'}) {
-	&require_apache();
-	foreach my $m ("mod_proxy", "mod_fcgid") {
-		if (!$apache::httpd_modules{$m}) {
-			return wantarray ? ( undef, &text('php_fpmnomod', $m) ) : undef;
+	# Config directory for per-domain pool files
+	my @verdirs;
+	DIR: foreach my $cdir ("/etc/php-fpm.d",
+			       "/etc/php*/fpm/pool.d",
+			       "/etc/php/*/fpm/pool.d",
+			       "/etc/opt/remi/php*/php-fpm.d",
+			       "/etc/opt/rh/rh-php*/php-fpm.d",
+			       "/usr/local/etc/php-fpm.d") {
+		foreach my $realdir (glob($cdir)) {
+			if ($realdir && -d $realdir) {
+				my @files = glob("$realdir/*");
+				if (@files) {
+					push(@verdirs, $realdir);
+					}
+				}
+			}
+		}
+	if (!@verdirs) {
+		$rv->{'err'} = $text{'php_fpmnodir'};
+		next;
+		}
+	my ($bestdir) = grep { /\Q$rv->{'version'}\E/ ||
+			       /\Q$rv->{'pkgversion'}\E/ ||
+			       /\Q$rv->{'shortversion'}\E/ } @verdirs;
+	$bestdir ||= $verdirs[0];
+	$rv->{'dir'} = $bestdir;
+
+	# Init script for this version
+	&foreign_require("init");
+	my $shortver = $rv->{'version'};
+	$shortver =~ s/^(\d+\.\d+)\..*/$1/g;
+	my $nodot = $shortver;
+	$nodot =~ s/\.//g;
+	foreach my $init ("php${shortver}-fpm",
+			  "php-fpm${shortver}",
+			  "rh-php${nodot}-php-fpm",
+			  "php${nodot}-php-fpm") {
+		my $st = &init::action_status($init);
+		if ($st) {
+			$rv->{'init'} = $init;
+			$rv->{'enabled'} = $st > 1;
+			last;
+			}
+		}
+	if (!$rv->{'init'}) {
+		# Init script for any version as a fallback
+		my @nodot = map { my $u = $_; $u =~ s/\.//g; $u }
+				@all_possible_php_versions;
+		foreach my $init ("php-fpm", "php5-fpm", "php7-fpm",
+				  (map { "php${_}-fpm" }
+				       @all_possible_php_versions),
+				  (map { "rh-php${_}-php-fpm" } @nodot),
+				  (map { "php${_}-php-fpm" } @nodot)) {
+			my $st = &init::action_status($init);
+			if ($st) {
+				$rv->{'init'} = $init;
+				$rv->{'enabled'} = $st > 1;
+				last;
+				}
+			}
+		}
+	if (!$rv->{'init'}) {
+		$rv->{'err'} = $text{'php_fpmnoinit2'};
+		next;
+		}
+
+	# Apache modules
+	if ($config{'web'}) {
+		&require_apache();
+		foreach my $m ("mod_proxy", "mod_fcgid") {
+			if (!$apache::httpd_modules{$m}) {
+				$rv->{'err'} = &text('php_fpmnomod', $m);
+				}
 			}
 		}
 	}
 
-# What version are we running?
-&foreign_require("software");
-foreach my $pname ("php-fpm", "php5-fpm") {
-	my @pinfo = &software::package_info($pname);
-	if (@pinfo && $pinfo[0]) {
-		$rv->{'version'} = $pinfo[4];
-		$rv->{'version'} =~ s/\-.*$//;
-		$rv->{'version'} =~ s/\+.*$//;
-		$rv->{'version'} =~ s/^\d+://;
-		last;
-		}
-	}
-
-$php_fpm_config_cache = $rv;
-return wantarray ? ( $rv, undef ) : $rv;
+$php_fpm_config_cache = \@rv;
+return @rv;
 }
 
 # get_php_fpm_socket_file(&domain, [dont-make-dir])
@@ -1745,12 +1851,28 @@ $d->{'php_fpm_port'} = $rv;
 return $rv;
 }
 
+# list_php_fpm_pools(&conf)
+# Returns a list of all pool IDs for some FPM config
+sub list_php_fpm_pools
+{
+my ($conf) = @_;
+my @rv;
+opendir(DIR, $conf->{'dir'});
+foreach my $f (readdir(DIR)) {
+	if ($f =~ /^(\S+)\.conf$/) {
+		push(@rv, $1);
+		}
+	}
+closedir(DIR);
+return @rv;
+}
+
 # create_php_fpm_pool(&domain)
 # Create a per-domain pool config file
 sub create_php_fpm_pool
 {
 my ($d) = @_;
-my $conf = &get_php_fpm_config();
+my $conf = &get_php_fpm_config($d);
 return $text{'php_fpmeconfig'} if (!$conf);
 my $file = $conf->{'dir'}."/".$d->{'id'}.".conf";
 my $port = &get_php_fpm_socket_port($d);
@@ -1796,7 +1918,7 @@ my $parent = $d->{'parent'} ? &get_domain_by($d->{'parent'}) : $d;
 my $dir = &get_domain_jailkit($parent);
 &save_php_fpm_config_value($d, "chroot", $dir);
 &unlock_file($file);
-&register_post_action(\&restart_php_fpm_server);
+&register_post_action(\&restart_php_fpm_server, $conf);
 return undef;
 }
 
@@ -1805,7 +1927,7 @@ return undef;
 sub delete_php_fpm_pool
 {
 my ($d) = @_;
-my $conf = &get_php_fpm_config();
+my $conf = &get_php_fpm_config($d);
 return $text{'php_fpmeconfig'} if (!$conf);
 my $file = $conf->{'dir'}."/".$d->{'id'}.".conf";
 if (-r $file) {
@@ -1814,16 +1936,17 @@ if (-r $file) {
 	if (-r $sock) {
 		&unlink_logged($sock);
 		}
-	&register_post_action(\&restart_php_fpm_server);
+	&register_post_action(\&restart_php_fpm_server, $conf);
 	}
 return undef;
 }
 
-# restart_php_fpm_serve()
+# restart_php_fpm_server([&config])
 # Post-action script to restart the server
 sub restart_php_fpm_server
 {
-my $conf = &get_php_fpm_config();
+my ($conf) = @_;
+$conf ||= &get_php_fpm_config();
 &$first_print($text{'php_fpmrestart'});
 if ($conf->{'init'}) {
 	&foreign_require("init");
@@ -1848,9 +1971,17 @@ else {
 sub get_php_fpm_config_value
 {
 my ($d, $name) = @_;
-my $conf = &get_php_fpm_config();
+my $conf = &get_php_fpm_config($d);
 return undef if (!$conf);
-my $file = $conf->{'dir'}."/".$d->{'id'}.".conf";
+return &get_php_fpm_pool_config_value($conf, $d->{'id'}, $name);
+}
+
+# get_php_fpm_pool_config_value(&conf, id, name)
+# Returns the value of a config setting from any pool file
+sub get_php_fpm_pool_config_value
+{
+my ($conf, $id, $name) = @_;
+my $file = $conf->{'dir'}."/".$id.".conf";
 my $lref = &read_file_lines($file, 1);
 foreach my $l (@$lref) {
 	if ($l =~ /^\s*(\S+)\s*=\s*(.*)/ && $1 eq $name) {
@@ -1873,9 +2004,17 @@ return &get_php_fpm_config_value($d, "php_value[${name}]");
 sub save_php_fpm_config_value
 {
 my ($d, $name, $value) = @_;
-my $conf = &get_php_fpm_config();
+my $conf = &get_php_fpm_config($d);
 return 0 if (!$conf);
-my $file = $conf->{'dir'}."/".$d->{'id'}.".conf";
+return &save_php_fpm_pool_config_value($conf, $d->{'id'}, $name, $value);
+}
+
+# save_php_fpm_pool_config_value(&conf, id, name, value)
+# Adds, updates or deletes an config setting in a pool file
+sub save_php_fpm_pool_config_value
+{
+my ($conf, $id, $name, $value) = @_;
+my $file = $conf->{'dir'}."/".$id.".conf";
 &lock_file($file);
 my $lref = &read_file_lines($file);
 my $found = -1;
@@ -1901,7 +2040,7 @@ elsif ($found < 0 && defined($value)) {
 	}
 &flush_file_lines($file);
 &unlock_file($file);
-&register_post_action(\&restart_php_fpm_server);
+&register_post_action(\&restart_php_fpm_server, $conf);
 return 1;
 }
 
@@ -1913,14 +2052,27 @@ my ($d, $name, $value) = @_;
 return &save_php_fpm_config_value($d, "php_value[${name}]", $value);
 }
 
+# increase_fpm_port(string)
+# Increase the number in a port string
+sub increase_fpm_port
+{
+my ($t) = @_;
+if ($t =~ /^(\d+)$/) {
+	return $t + 1;
+	}
+elsif ($t =~ /^(.*):(\d+)$/) {
+	return $1.":".($2 + 1);
+	}
+return undef;
+}
+
 # get_apache_mod_php_version()
 # If Apache has mod_phpX installed, return the version number
 sub get_apache_mod_php_version
 {
 return $apache_mod_php_version_cache if ($apache_mod_php_version_cache);
 &require_apache();
-my $major = $apache::httpd_modules{'mod_php4'} ? 4 :
-	    $apache::httpd_modules{'mod_php5'} ? 5 :
+my $major = $apache::httpd_modules{'mod_php5'} ? 5 :
             $apache::httpd_modules{'mod_php7'} ? "7.0" : undef;
 return undef if (!$major);
 foreach my $php ("php$major", "php") {

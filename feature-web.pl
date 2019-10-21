@@ -213,6 +213,14 @@ else {
 	# For Apache 2.4+, add a "Require all granted" directive
 	&add_require_all_granted_directives($d, $d->{'web_port'});
 
+	# If the default ServerName matches this domain name, change it
+	my $defsn = &get_apache_default_servername();
+	if ($defdn eq $d->{'dom'}) {
+		&apache::save_directive("ServerName", [ "nomatch.".$defsn ],
+					$conf, $conf);
+		&flush_file_lines();
+		}
+
 	# Create empty access and error log files, owned by the domain's user.
 	# Apache opens them as root, so it will be able to write.
 	local $log = &get_apache_log($d->{'dom'}, $d->{'web_port'}, 0);
@@ -403,11 +411,11 @@ else {
 		if ($alog && !&is_under_directory($d->{'home'}, $alog) &&
 		    !$d->{'subdom'}) {
 			&$first_print($text{'delete_apachelog'});
-			local @dlogs = ($alog, glob("$alog.*"),
-					glob("$alog-*"));
+			local @dlogs = ($alog, glob("${alog}.*"),
+					glob("${alog}_*"), glob("${alog}-*"));
 			if ($elog) {
-				push(@dlogs, $elog, glob("$elog.*"),
-				     	     glob("$elog-*"));
+				push(@dlogs, $elog, glob("${elog}.*"),
+				     glob("${elog}_*"), glob("${elog}-*"));
 				}
 			&unlink_file(@dlogs);
 			&$second_print($text{'setup_done'});
@@ -474,6 +482,12 @@ if (!$virt) {
 &find_html_cgi_dirs($d);
 if (defined(&create_php_wrappers)) {
 	&create_php_wrappers($d);
+	}
+my $mode = &get_domain_php_mode($oldd);
+if ($mode eq "fpm") {
+	# Force port re-allocation
+	delete($d->{'php_fpm_port'});
+	&save_domain_php_mode($d, $mode);
 	}
 
 &release_lock_web($d);
@@ -565,6 +579,7 @@ if ($_[1]->{'alias'} != $_[0]->{'alias'}) {
 
 local $conf = &apache::get_config();
 local $need_restart = 0;
+local $mode = &get_domain_php_mode($_[1]);
 
 if ($_[0]->{'alias'} && $_[0]->{'alias_mode'}) {
 	# Possibly just updating parent virtual server
@@ -817,6 +832,11 @@ else {
 			&add_user_to_domain_group($_[0], $web_user,
 						  'setup_webuser');
 			}
+
+		# Update FPM config file with new username
+		if ($mode eq "fpm") {
+			&create_php_fpm_pool($_[0]);
+			}
 		}
 	if ($_[0]->{'dom'} ne $_[1]->{'dom'}) {
 		# Domain name has changed .. update ServerName and ServerAlias,
@@ -972,6 +992,20 @@ else {
 			    &apache::find_directive_struct("Directory", $vconf);
 		if (!$dir) {
 			return &text('validate_ewebdir', $pdir);
+			}
+		}
+
+	# If an IPv6 DNS record exists, make sure the Apache config supports it
+	my $ip6addr = &to_ip6address("www.".$d->{'dom'}) ||
+		      &to_ip6address($d->{'dom'});
+	if ($ip6addr) {
+		if (!$d->{'ip6'}) {
+			return &text('validate_ewebipv6', $ip6addr);
+			}
+		local $ipp = "[".$d->{'ip6'}."]:".$d->{'web_port'};
+		if (&indexof($ipp, @{$virt->{'words'}}) < 0 &&
+		    &indexof("*:".$d->{'web_port'}, @{$virt->{'words'}}) < 0) {
+			return &text('validate_ewebipv6virt', $ip6addr);
 			}
 		}
 	}
@@ -1194,7 +1228,6 @@ else {
 	# Just signal a re-load
 	&apache::restart_apache();
 	}
-&cleanup_php_cgi_processes() if (defined(&cleanup_php_cgi_processes));
 &unlock_file($apachelock);
 &$second_print($text{'setup_done'});
 return 1;
@@ -1450,7 +1483,7 @@ if ($virt) {
 
 	# If the Apache log is outside the home, back it up too
 	local $alog = &get_apache_log($d->{'dom'}, $d->{'web_port'});
-	if ($alog && 
+	if ($alog && -r $alog &&
 	    !&is_under_directory($d->{'home'}, $alog) &&
 	    !$allopts->{'dir'}->{'dirnologs'}) {
 		&$first_print($text{'backup_apachelog'});
@@ -1470,7 +1503,8 @@ if ($virt) {
 		# Also copy the error log
 		local $elog = &get_apache_log($d->{'dom'},
 					      $d->{'web_port'}, 1);
-		if ($elog && $ok && !&is_under_directory($d->{'home'}, $elog)) {
+		if ($elog && -r $elog && $ok &&
+		    !&is_under_directory($d->{'home'}, $elog)) {
 			($ok, $err) = &copy_write_as_domain_user(
 					$d, $elog, $file."_elog");
 			}
@@ -1852,8 +1886,8 @@ local ($d, $subdir) = @_;
 local $p = &domain_has_website($d);
 local $path = $d->{'home'}."/".$subdir;
 local $oldpath = $d->{'public_html_path'};
-if (-l $path) {
-	return "The HTML directory cannot be a symbolic link";
+if (-f $path) {
+	return "The HTML directory cannot be a file";
 	}
 if ($p ne "web") {
 	my $err = &plugin_call($p, "feature_set_web_public_html_dir",
@@ -2136,15 +2170,22 @@ local ($d, $conf, $web_port, $no_star_match, $ip) = @_;
 &require_apache();
 if ($apache::httpd_modules{'core'} >= 2.4) {
 	# Apache 2.4 doesn't need NameVirtualHost any more.
-	# However, check if any existing <VirtualHost> uses *, which means that
+	# However, check if all existing <VirtualHost>s uses *, which means that
 	# subsequent ones should as well. Otherwise, they can just use IPs.
 	local @virt = &apache::find_directive_struct("VirtualHost", $conf);
+	local $starcount = 0;
+	local $ipcount = 0;
 	foreach my $v (@virt) {
-		if ($v->{'words'}->[0] =~ /^\*/) {
-			return 1;
+		if ($v->{'words'}->[0] =~ /^(\*|_DEFAULT_)(:(\d+))?/i &&
+		    (!$3 || $3 == $web_port)) {
+			$startcount++;
+			}
+		elsif ($v->{'words'}->[0] =~ /^(\S+)(:(\d+))?/i && $1 eq $ip &&
+		       (!$3 || $3 == $web_port)) {
+			$ipcount++;
 			}
 		}
-	return 0;
+	return $ipcount || !$starcount ? 0 : 1;
 	}
 local $nvstar;
 if ($d->{'name'}) {
@@ -2293,7 +2334,7 @@ if ($mode eq "cgi" || $mode eq "fcgid") {
 	}
 elsif ($mode eq "fpm" && &get_webmin_version() >= 1.844) {
 	# Link to phpini module for the FPM version
-	my $conf = &get_php_fpm_config();
+	my $conf = &get_php_fpm_config($d);
 	if ($conf) {
 		my $file = $conf->{'dir'}."/".$d->{'id'}.".conf";
 		push(@rv, { 'mod' => 'phpini',
@@ -2319,21 +2360,51 @@ local $apid = defined($typestatus->{'apache'}) ?
 local @links = ( { 'link' => '/apache/',
 		   'desc' => $text{'index_amanage'},
 		   'manage' => 1 } );
+local @rv;
 if ($apid) {
-	return ( { 'status' => 1,
-		   'name' => $text{'index_aname'},
-		   'desc' => $text{'index_astop'},
-		   'restartdesc' => $text{'index_arestart'},
-		   'longdesc' => $text{'index_astopdesc'},
-		   'links' => \@links } );
+	push(@rv, { 'status' => 1,
+		    'name' => $text{'index_aname'},
+		    'desc' => $text{'index_astop'},
+		    'restartdesc' => $text{'index_arestart'},
+		    'longdesc' => $text{'index_astopdesc'},
+		    'links' => \@links });
 	}
 else {
-	return ( { 'status' => 0,
-		   'name' => $text{'index_aname'},
-		   'desc' => $text{'index_astart'},
-		   'longdesc' => $text{'index_astartdesc'},
-		   'links' => \@links } );
+	push(@rv, { 'status' => 0,
+		    'name' => $text{'index_aname'},
+		    'desc' => $text{'index_astart'},
+		    'longdesc' => $text{'index_astartdesc'},
+		    'links' => \@links });
 	}
+foreach my $fpm (&list_php_fpm_configs()) {
+	&foreign_require("init");
+	next if (!$fpm->{'init'});
+	next if (!defined(&init::status_action));
+	my $st = &init::status_action($fpm->{'init'});
+	next if ($st < 0);
+	if ($st) {
+		# Running, show buttons to stop and restart
+		push(@rv, { 'status' => 1,
+			    'feature' => 'fpm',
+			    'id' => $fpm->{'version'},
+			    'name' => &text('index_fpmname', $fpm->{'version'}),
+			    'desc' => $text{'index_fpmstop'},
+			    'restartdesc' => $text{'index_fpmrestart'},
+			    'longdesc' => &text('index_fpmstopdesc',
+						$fpm->{'version'}) });
+		}
+	else {
+		# Down, show button to start
+		push(@rv, { 'status' => 0,
+			    'feature' => 'fpm',
+			    'id' => $fpm->{'version'},
+			    'name' => &text('index_fpmname', $fpm->{'version'}),
+			    'desc' => $text{'index_fpmstart'},
+			    'longdesc' => &text('index_fpmstartdesc',
+						$fpm->{'version'}) });
+		}
+	}
+return @rv;
 }
 
 # start_service_web()
@@ -2356,12 +2427,35 @@ sleep(1) if (!$err);
 return $err;
 }
 
+# start_service_fpm(version)
+# Attempts to start the FPM server for some version
+sub start_service_fpm
+{
+my ($ver) = @_;
+my ($fpm) = grep { $_->{'version'} eq $ver } &list_php_fpm_configs();
+return "Invalid version $ver" if (!$fpm || !$fpm->{'init'});
+&foreign_require("init");
+my ($ok, $err) = &init::start_action($fpm->{'init'});
+return $ok ? undef : $err;
+}
+
+# stops_service_fpm(version)
+# Attempts to stop the FPM server for some version
+sub stop_service_fpm
+{
+my ($ver) = @_;
+my ($fpm) = grep { $_->{'version'} eq $ver } &list_php_fpm_configs();
+return "Invalid version $ver" if (!$fpm || !$fpm->{'init'});
+&foreign_require("init");
+my ($ok, $err) = &init::stop_action($fpm->{'init'});
+return $ok ? undef : $err;
+}
+
 # show_template_web(&tmpl)
 # Outputs HTML for editing apache related template options
 sub show_template_web
 {
 local ($tmpl) = @_;
-local @allvers = &unique(map { $_->[0] } &list_available_php_versions());
 
 # Work out fields to disable
 local @webfields = ( "web", "suexec", "user_def",
@@ -2485,7 +2579,7 @@ print &ui_table_row(
 	&ui_opt_textbox("web_sslprotos", $tmpl->{'web_sslprotos'}, 30,
                         $text{'newweb_sslprotos_def'}));
 
-# Setup matching Webmin/Usermin SSL cert
+# Setup matching Webmin/Usermin SSL certs
 print &ui_table_row(&hlink($text{'newweb_webmin'},
 			   "template_web_webmin_ssl"),
 	&ui_radio("web_webmin_ssl",
@@ -2496,6 +2590,19 @@ print &ui_table_row(&hlink($text{'newweb_usermin'},
 			   "template_web_usermin_ssl"),
 	&ui_radio("web_usermin_ssl",
 		  $tmpl->{'web_usermin_ssl'} ? 1 : 0,
+		  [ [ 1, $text{'yes'} ], [ 0, $text{'no'} ] ]));
+
+# Setup Dovecot and Postfix SSL certs
+print &ui_table_row(&hlink($text{'newweb_dovecot'},
+			   "template_web_dovecot_ssl"),
+	&ui_radio("web_dovecot_ssl",
+		  $tmpl->{'web_dovecot_ssl'} ? 1 : 0,
+		  [ [ 1, $text{'yes'} ], [ 0, $text{'no'} ] ]));
+
+print &ui_table_row(&hlink($text{'newweb_postfix'},
+			   "template_web_postfix_ssl"),
+	&ui_radio("web_postfix_ssl",
+		  $tmpl->{'web_postfix_ssl'} ? 1 : 0,
 		  [ [ 1, $text{'yes'} ], [ 0, $text{'no'} ] ]));
 
 # Add rewrites for webmail and admin
@@ -2649,6 +2756,8 @@ if ($in{"web_mode"} == 2) {
 
 	$tmpl->{'web_webmin_ssl'} = $in{'web_webmin_ssl'};
 	$tmpl->{'web_usermin_ssl'} = $in{'web_usermin_ssl'};
+	$tmpl->{'web_postfix_ssl'} = $in{'web_postfix_ssl'};
+	$tmpl->{'web_dovecot_ssl'} = $in{'web_dovecot_ssl'};
 
 	# Parse SSI setting
 	$tmpl->{'web_ssi'} = $in{'web_ssi'};
@@ -2885,13 +2994,13 @@ return @rv;
 sub show_template_phpwrappers
 {
 local ($tmpl) = @_;
-foreach my $w (&list_php_wrapper_templates()) {
+foreach my $w (&unique(&list_php_wrapper_templates())) {
 	local $ndi = &none_def_input($w, $tmpl->{$w},
 				     $text{'tmpl_wrapperbelow'}, 0, 0,
 				     $text{'tmpl_wrappernone'}, [ $w ]);
 	$w =~ /^php([0-9\.]+)(cgi|fcgi)/ || next;
 	local ($v, $t) = ($1, $2);
-	print &ui_table_row(&hlink(&text('tmpl_php'.$t, $v), "template_".$w),
+	print &ui_table_row(&hlink(&text('tmpl_php'.$t, $v), "template_php".$t),
 			    $ndi."<br>".
 		&ui_textarea($w, $tmpl->{$w} eq "none" ? "" :
 				join("\n", split(/\t/, $tmpl->{$w})),
@@ -2904,7 +3013,7 @@ foreach my $w (&list_php_wrapper_templates()) {
 sub parse_template_phpwrappers
 {
 local ($tmpl) = @_;
-foreach my $w (&list_php_wrapper_templates()) {
+foreach my $w (&unique(&list_php_wrapper_templates())) {
 	$w =~ /^php([0-9\.]+)(cgi|fcgi)/ || next;
 	local ($v, $t) = ($1, $2);
 	if ($in{$w."_mode"} == 0) {
@@ -2971,7 +3080,7 @@ if ($tmpl->{'web_php_suexec'} == 0) {
 elsif ($tmpl->{'web_php_suexec'} == 1 ||
        $tmpl->{'web_php_suexec'} == 2 &&
         !$apache::httpd_modules{'mod_fcgid'}) {
-	# Create cgi wrappers for PHP 4 and 5
+	# Create cgi wrappers for PHP
 	$mode = "cgi";
 	}
 elsif ($tmpl->{'web_php_suexec'} == 2) {
@@ -3158,7 +3267,7 @@ local @sa = &apache::find_directive("ServerAlias", $vconf);
 
 # Filter out redirect rules
 for(my $i=0; $i<@rcond; $i++) {
-	if ($rcond[$i] =~ /^\%{HTTP_HOST}\s+=(webmail|admin)\.$d->{'dom'}/) {
+	if ($rcond[$i] =~ /^\%\{HTTP_HOST\}\s+=(webmail|admin)\.\Q$d->{'dom'}\E/) {
 		splice(@rcond, $i, 1);
 		if ($rrule[$i] =~ /^\^\(\.\*\)\s+(http|https):/) {
 			splice(@rrule, $i, 1);
@@ -3457,31 +3566,34 @@ return undef;
 }
 
 # get_suexec_document_root()
-# Returns the directory under which suexec will run binaries, or undef 
+# Returns the directories under which suexec will run binaries, or undef 
 # if unknown
 sub get_suexec_document_root
 {
 local $suexec = &get_suexec_path();
-return undef if (!$suexec);
+return ( ) if (!$suexec);
 local $out = &backquote_command("$suexec -V 2>&1 </dev/null");
 if ($out =~ /AP_DOC_ROOT="([^"]+)"/ ||
     $out =~ /AP_DOC_ROOT=(\S+)/) {
-	return $1;
+	return split(/:/, $1);
 	}
 # Try new Debian-style suexec config files
 local $user = &get_apache_user();
 if ($out =~ /SUEXEC_CONFIG_DIR="([^"]+)"/ ||
     $out =~ /SUEXEC_CONFIG_DIR=(\S+)/) {
 	foreach my $cf ("$1/$user", "$1/www-data") {
-		if (open(SUEXECCF, $cf)) {
-			my $basedir = <SUEXECCF>;
-			close(SUEXECCF);
-			$basedir =~ s/\r|\n//g;
-			return $basedir if ($basedir);
+		my @roots;
+		next if (!-r $cf);
+		my $lref = &read_file_lines($cf);
+		foreach my $l (@$lref) {
+			if ($l =~ /^(\/\S+)/) {
+				push(@roots, $1);
+				}
 			}
+		return @roots if (@roots);
 		}
 	}
-return undef;
+return ( );
 } 
 
 # check_suexec_install(&template)
@@ -3493,7 +3605,7 @@ local ($tmpl) = @_;
 
 # Make sure suexec is actually installed
 local $suexec = &get_suexec_path();
-local $suhome = &get_suexec_document_root();
+local @suhome = &get_suexec_document_root();
 local $suerr;
 if ($tmpl->{'web_suexec'} && !$suexec) {
 	return $text{'check_ewebsuexecbin'};
@@ -3509,13 +3621,18 @@ foreach my $l (@dirs) {
 	}
 $cgibase =~ s/\/$//;
 
-# Make sure home base is under base directory, or template CGI directory is
-if ($tmpl->{'web_suexec'} && $suhome &&
-    !&same_file($suhome, $home_base) &&
-    !&is_under_directory($suhome, $home_base) &&
-    (!$cgibase || !&is_under_directory($suhome, $cgibase))) {
+# Make sure home base is under a base directory, or template CGI directory is
+if ($tmpl->{'web_suexec'} && @suhome) {
+	foreach my $suhome (@suhome) {
+		if (&same_file($suhome, $home_base) ||
+		    &is_under_directory($suhome, $home_base) ||
+		    $cgibase && &is_under_directory($suhome, $cgibase)) {
+			# Got a match on a configured directory
+			return undef;
+			}
+		}
 	return &text('check_ewebsuexechome',
-		     "<tt>$home_base</tt>", "<tt>$suhome</tt>");
+		     "<tt>$home_base</tt>", "<tt>".join(", ", @suhome)."</tt>");
 	}
 return undef;
 }
@@ -4523,6 +4640,19 @@ my ($glob, $dir) = @_;
 $glob =~ s/\?/./g;
 $glob =~ s/\*/.*/g;
 return $dir =~ /^$glob$/;
+}
+
+# get_apache_default_servername()
+# Returns the servername that Apache uses for the default server
+sub get_apache_default_servername
+{
+&require_apache();
+my $conf = &apache::get_config();
+my ($sn) = &apache::find_directive("ServerName", $conf);
+if (!$sn) {
+	$sn = &get_system_hostname();
+	}
+return $sn;
 }
 
 $done_feature_script{'web'} = 1;

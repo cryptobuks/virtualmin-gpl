@@ -38,10 +38,12 @@ elsif ($in{'parentuser'}) {
 if ($parentuser && !$parentdom) {
 	$parentdom = &get_domain_by("user", $parentuser, "parent", "");
 	$parentdom || &error(&text('form_eparent', $parentuser));
+	&can_edit_domain($parentdom) || &error($text{'form_ecannot'});
 	}
 if ($in{'subdom'}) {
 	$subdom = &get_domain($in{'subdom'});
 	$subdom || &error(&text('form_esubdom', &html_escape($in{'subdom'})));
+	&can_edit_domain($subdom) || &error($text{'form_ecannot'});
 	}
 
 # Check if domains limit has been exceeded
@@ -112,9 +114,9 @@ if (!$parentuser) {
 		@parts || &error($text{'setup_eemail3'});
 		foreach my $p (@parts) {
 			if ($p =~ /^(\S+)\@(\S+)$/ && $2 eq $in{'dom'} &&
-			    $1 ne $user) {
+			    $1 ne $user && $in{'mail'}) {
 				# Don't allow contact address to be in the
-				# domain being created
+				# domain being created (if email is local)
 				&error($text{'setup_eemail4'});
 				}
 			}

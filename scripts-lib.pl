@@ -114,6 +114,7 @@ local $catfunc = "script_${name}_category";
 local $disfunc = "script_${name}_disabled";
 local $sitefunc = "script_${name}_site";
 local $authorfunc = "script_${name}_author";
+local $overlapfunc = "script_${name}_overlap";
 
 # Check for critical functions
 return undef if (!defined(&$dfunc) || !defined(&$vfunc));
@@ -149,6 +150,7 @@ local $rv = { 'name' => $name,
 	      'uses' => defined(&$ufunc) ? [ &$ufunc() ] : [ ],
 	      'site' => defined(&$sitefunc) ? &$sitefunc() : undef,
 	      'author' => defined(&$authorfunc) ? &$authorfunc() : undef,
+	      'overlap' => defined(&$overlapfunc) ? &$overlapfunc() : undef,
 	      'dir' => $sdir,
 	      'source' => $sfiles[0]->[3],
 	      'depends_func' => "script_${name}_depends",
@@ -208,17 +210,18 @@ return $rv;
 # entry in the list is a hash ref containing the id, name, version and opts
 sub list_domain_scripts
 {
-local ($f, @rv, $i);
-local $ddir = "$script_log_directory/$_[0]->{'id'}";
+my ($d) = @_;
+my $ddir = "$script_log_directory/$d->{'id'}";
+my @rv;
 opendir(DIR, $ddir);
-while($f = readdir(DIR)) {
+while(my $f = readdir(DIR)) {
 	if ($f =~ /^(\S+)\.script$/) {
-		local %info;
+		my %info;
 		&read_file("$ddir/$f", \%info);
-		local @st = stat("$ddir/$f");
+		my @st = stat("$ddir/$f");
 		$info{'id'} = $1;
 		$info{'file'} = "$ddir/$f";
-		foreach $i (keys %info) {
+		foreach my $i (keys %info) {
 			if ($i =~ /^opts_(.*)$/) {
 				$info{'opts'}->{$1} = $info{$i};
 				delete($info{$i});
@@ -230,6 +233,11 @@ while($f = readdir(DIR)) {
 			}
 		else {
 			$info{'deleted'} = 0;
+			}
+		if ($info{'url'} =~ /^(http|https):\/\/([^\/]+)(\/.*)/) {
+			# Fix URL to match actual domain name
+			my $url = &get_domain_url($d, $1 eq "https");
+			$info{'url'} = $url.$3;
 			}
 		push(@rv, \%info);
 		}
@@ -3022,6 +3030,18 @@ while($rport < 65536) {
 	$rport++;
 	}
 return $rport >= 65536 ? undef : $rport;
+}
+
+# get_php_cli_command(script-php-version) 
+# Returns the path to the non-CGI version of the PHP command
+sub get_php_cli_command
+{
+local ($v) = @_;
+local ($p5) = grep { $_->[0] == $v } &list_available_php_versions($d);
+local $cmd = $p5->[1];
+$cmd ||= &has_command("php5") || &has_command("php");
+$cmd =~ s/-cgi//;
+return $cmd;
 }
 
 1;

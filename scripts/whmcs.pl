@@ -24,7 +24,7 @@ return "WHMCS is an all-in-one client management, billing & support solution for
 # script_whmcs_versions()
 sub script_whmcs_versions
 {
-return ( "6.3.2", "7.1.1" );
+return ( "6.3.2", "7.7.1" );
 }
 
 sub script_whmcs_gpl
@@ -34,7 +34,7 @@ return 1;
 
 sub script_whmcs_release
 {
-return 5;	# To update ioncube download URL
+return 6;	# To update SSL link
 }
 
 sub script_whmcs_category
@@ -100,7 +100,7 @@ else {
 	$rv .= &ui_table_row("WHMCS license key",
 			     &ui_textbox("licensekey", undef, 30));
 	$rv .= &ui_table_row(" ",
-		"You must purchase an <a href='http://www.whmcs.com/members/aff.php?aff=4115' target=_blank>WHMCS license</a> before installing this script");
+		"You must purchase an <a href='https://www.whmcs.com/members/aff.php?aff=4115' target=_blank>WHMCS license</a> before installing this script");
 	}
 return $rv;
 }
@@ -201,7 +201,7 @@ local $shortver = $ver;
 $shortver =~ s/\.//g;
 local @files = ( { 'name' => "source",
 	   'file' => "whmcs_v$shortver.zip",
-	   'url' => "http://software.virtualmin.com/download/whmcs_v$shortver.zip" } );
+	   'url' => "http://scripts.virtualmin.com/whmcs_v${shortver}_full.zip" } );
 local $io = &script_whmcs_get_ioncube_type();
 push(@files, { 'name' => "ioncube",
 	       'file' => "ioncube_loaders.zip",

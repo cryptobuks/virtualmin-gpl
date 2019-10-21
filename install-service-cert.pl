@@ -7,7 +7,9 @@ Copy the cert and key from a virtual server to some other service.
 The domain to copy the cert from is specified with the C<--domain> flag
 followed by a virtual server name. The services (like dovecot, postfix, webmin
 or usermin) to copy it to are set with the C<--service> flag, which can be
-given multiple times.
+given multiple times. The domain's certificate will be used by default for
+SSL connections to the given services, but may be over-ridden by per-domain or
+per-IP certs.
 
 =cut
 
@@ -53,8 +55,7 @@ $d || &usage("No virtual server named $dname found");
 @services || &usage("No services to copy the cert to specified");
 
 # Do the specified services exist?
-@svcs = &get_all_service_ssl_certs($d, 0);
-%svcnames = map { $_->{'id'}, $_ } @svcs;
+%svcnames = map { $_, 1 } &list_service_ssl_cert_types();
 foreach my $s (@services) {
 	$svcnames{$s} || &usage("Invalid service $s. Valid services are ".
 				join(" ", keys %svcnames));
@@ -62,7 +63,6 @@ foreach my $s (@services) {
 
 # Copy to each of them
 foreach my $s (@services) {
-	$svc = $svcnames{$s};
 	&$first_print("Copying to service $s ..");
 	&$indent_print();
 	$func = "copy_".$s."_ssl_service";

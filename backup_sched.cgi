@@ -68,6 +68,7 @@ else {
 			 !$in{"dest".$i."_file"});
 		$dest = &parse_backup_destination("dest".$i, \%in,
 						  $cbmode == 3, $d, $in{'fmt'});
+		next if (!$dest);	# Removed by user
 		push(@dests, $dest);
 
 		# Parse purge policy for the destination
@@ -123,6 +124,10 @@ else {
 		$sched->{'plan'} = $in{'plan_def'} ? undef :
 			join(" ", split(/\0/, $in{'plan'}));
 		}
+	if (&can_edit_resellers()) {
+		$sched->{'reseller'} = $in{'reseller_def'} ? undef :
+			join(" ", split(/\0/, $in{'reseller'}));
+		}
 	$sched->{'parent'} = $in{'parent'};
 	%sel_features = map { $_, 1 } split(/\0/, $in{'feature'});
 	$sched->{'feature_all'} = $in{'feature_all'};
@@ -170,6 +175,12 @@ else {
 		}
 	$sched->{'enabled'} = $in{'enabled'};
 	$sched->{'kill'} = $in{'kill'};
+	if (&master_admin()) {
+		if ($in{'ownrestore'} && !$key) {
+			&error($text{'backup_eownrestore'});
+			}
+		$sched->{'ownrestore'} = $in{'ownrestore'};
+		}
 	if (&can_backup_commands()) {
 		$sched->{'before'} = $in{'before_def'} ? undef : $in{'before'};
 		$sched->{'after'} = $in{'after_def'} ? undef : $in{'after'};
@@ -183,6 +194,14 @@ else {
 		}
 	if ($in{'enabled'}) {
 		&virtualmin_ui_parse_cron_time("enabled", $sched, \%in);
+		}
+
+	# Check for incremental-only setup
+	if ($in{'new'} && $sched->{'increment'}) {
+		my @full = grep { !$_->{'increment'} } @scheds;
+		if (!@full) {
+			&error($text{'backup_einconly'});
+			}
 		}
 
 	# Save the schedule and thus the cron job

@@ -60,7 +60,7 @@ while(@ARGV > 0) {
 		else {
 			# In parameter
 			$f =~ s/\r//g;
-			$f =~ s/\s+/\n/g;
+			$f =~ s/\t+/\n/g;
 			push(@got, [ $g, $f ]);
 			}
 		}
@@ -173,6 +173,9 @@ foreach $od (&get_domain_by("ssl_same", $d->{'id'})) {
 foreach $od (&get_domain_by("ssl_same", $d->{'id'})) {
 	&sync_domain_tlsa_records($od);
 	}
+
+# Turn off any let's encrypt renewal
+&disable_letsencrypt_renewal($d);
 
 &run_post_actions();
 &virtualmin_api_log(\@OLDARGV, $d);

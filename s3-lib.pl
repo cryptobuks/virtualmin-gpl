@@ -7,10 +7,14 @@ $s3_groups_uri = "http://acs.amazonaws.com/groups/global/";
 # Returns an error message if S3 cannot be used
 sub check_s3
 {
-foreach my $m ("XML::Simple", "Crypt::SSLeay", "Digest::HMAC_SHA1", @s3_perl_modules) {
+foreach my $m ("XML::Simple", "Crypt::SSLeay", "Digest::HMAC_SHA1",
+               "LWP::Protocol::https", @s3_perl_modules) {
 	eval "use $m";
-	if ($@) {
+	if ($@ =~ /Can't locate/) {
 		return &text('s3_emodule', "<tt>$m</tt>");
+		}
+	elsif ($@) {
+		return &text('s3_emodule2', "<tt>$m</tt>", "$@");
 		}
 	}
 return undef;
@@ -398,12 +402,16 @@ my ($akey, $skey, $bucket, $sourcefile, $destfile, $info, $dom, $tries,
        $rrs, $multipart) = @_;
 $tries ||= 1;
 my $err;
+my @rrsargs;
+if($rrs) {
+	push(@rrsargs, "--storage-class", "REDUCED_REDUNDANCY");
+	}
 my @regionflag = &s3_region_flag($akey, $skey, $bucket);
 for(my $i=0; $i<$tries; $i++) {
 	$err = undef;
 	my $out = &call_aws_cmd($akey,
 		[ @regionflag,
-		  "cp", $sourcefile, "s3://$bucket/$destfile" ]);
+		  "cp", $sourcefile, "s3://$bucket/$destfile", @rrsargs ]);
 	if ($?) {
 		$err = $out;
 		}
@@ -411,8 +419,8 @@ for(my $i=0; $i<$tries; $i++) {
 		# Upload the .info file
 		my $temp = &uncat_transname(&serialise_variable($info));
 		my $out = &call_aws_cmd($akey,
-			[ @regionflag, 
-			  "cp", $temp, "s3://$bucket/$destfile.info" ]);
+		    [ @regionflag, 
+		      "cp", $temp, "s3://$bucket/$destfile.info", @rrsargs ]);
 		$err = $out if ($?);
 		}
 	if (!$err && $dom) {
@@ -420,8 +428,8 @@ for(my $i=0; $i<$tries; $i++) {
 		my $temp = &uncat_transname(&serialise_variable(
 				&clean_domain_passwords($dom)));
 		my $out = &call_aws_cmd($akey,
-			[ @regionflag,
-			  "cp", $temp, "s3://$bucket/$destfile.dom" ]);
+		    [ @regionflag,
+		      "cp", $temp, "s3://$bucket/$destfile.dom", @rrsargs ]);
 		$err = $out if ($?);
 		}
 	last if (!$err);
@@ -968,7 +976,7 @@ sub s3_list_locations
 {
 my ($akey, $skey) = @_;
 return ( "us-west-1", "us-west-2", "EU", "ap-southeast-1", "ap-southeast-2",
-	 "ap-northeast-1", "sa-east-1", "eu-central-1" );
+	 "ap-south-1", "ap-northeast-1", "sa-east-1", "eu-central-1" );
 }
 
 # can_use_aws_cmd(access-key, secret-key)

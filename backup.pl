@@ -69,6 +69,12 @@ if ($sched->{'plan'}) {
 		       $plandoms{$_->{'parent'}} } @doms;
 	}
 
+# Limit to those owned by some resellers, if given
+if ($sched->{'reseller'}) {
+	%resels = map { $_, 1 } split(/\s+/, $sched->{'reseller'});
+	@doms = grep { $_->{'reseller'} && $resels{$_->{'reseller'}} } @doms;
+	}
+
 # Work out who the schedule is being run for
 if ($sched->{'owner'}) {
 	$asd = &get_domain($sched->{'owner'});
@@ -111,7 +117,9 @@ $outdent_print = \&outdent_save_print;
 $start_time = time();
 if ($sched->{'before'}) {
 	&$first_print("Running pre-backup command ..");
+	&set_backup_envs($sched, \@doms);
 	$out .= &backquote_command("($sched->{'before'}) 2>&1 </dev/null");
+	&reset_backup_envs();
 	print $out;
 	$output .= $out;
 	if ($?) {
@@ -175,7 +183,9 @@ if ($ok || $sched->{'errors'} == 1) {
 # Run any after command
 if ($sched->{'after'}) {
 	&$first_print("Running post-backup command ..");
+	&set_backup_envs($sched, \@doms);
 	$out = &backquote_command("($sched->{'after'}) 2>&1 </dev/null");
+	&reset_backup_envs();
 	print $out;
 	$output .= $out;
 	if ($?) {
@@ -190,7 +200,7 @@ foreach $dest (@strfdests) {
 	&write_backup_log(\@doms, $dest, $sched->{'increment'}, $start_time,
 			  $size, $ok, "sched", $output, $errdoms,
 			  $asd ? $asd->{'user'} : undef, $key, $sched->{'id'},
-			  $sched->{'fmt'});
+			  $sched->{'fmt'}, $sched->{'ownrestore'});
 	}
 
 PREFAILED:

@@ -79,6 +79,12 @@ $rv .= &ui_table_row($text{'cloud_s3_chunk'},
 	&ui_opt_textbox("s3_chunk", $config{'s3_chunk'}, 6,
 			$text{'default'}." (5 MB)"));
 
+# Location for new buckets
+$rv .= &ui_table_row($text{'cloud_s3_location'},
+	&ui_select("s3_location", $config{'s3_location'},
+		   [ [ "", $text{'default'} ],
+		     &s3_list_locations(@$account) ]));
+
 return $rv;
 }
 
@@ -117,6 +123,9 @@ else {
 		&error($text{'cloud_es3_chunk'});
 	$config{'s3_chunk'} = $in->{'s3_chunk'};
 	}
+
+# Parse new bucket location
+$config{'s3_location'} = $in->{'s3_location'};
 
 &lock_file($module_config_file);
 &save_module_config();
@@ -220,12 +229,12 @@ else {
 return undef;
 }
 
-# cloud_s3_clear()
+# cloud_rs_clear()
 # Reset the Rackspace account to the default
-sub cloud_s3_clear
+sub cloud_rs_clear
 {
-delete($config{'s3_user'});
-delete($config{'s3_key'});
+delete($config{'rs_user'});
+delete($config{'rs_key'});
 &lock_file($module_config_file);
 &save_module_config();
 &unlock_file($module_config_file);
@@ -275,6 +284,12 @@ $rv .= &ui_table_row($text{'cloud_google_secret'},
 # GCE project name
 $rv .= &ui_table_row($text{'cloud_google_project'},
 	&ui_textbox("google_project", $config{'google_project'}, 40));
+
+# Default location for new buckets
+$rv .= &ui_table_row($text{'cloud_google_location'},
+	&ui_select("google_location", $config{'google_location'},
+		   [ [ "", $text{'default'} ],
+		     &list_gcs_locations() ]));
 
 # OAuth2 code
 if ($config{'google_oauth'}) {
@@ -326,6 +341,9 @@ else {
 		&error($text{'cloud_egoogle_project'});
 	$reauth++ if ($config{'google_project'} ne $in->{'google_project'});
 	$config{'google_project'} = $in->{'google_project'};
+
+	# Parse bucket location
+	$config{'google_location'} = $in->{'google_location'};
 
 	$reauth++ if (!$config{'google_oauth'});
 	}

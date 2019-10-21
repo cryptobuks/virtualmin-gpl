@@ -473,8 +473,8 @@ $domains_tests = [
 	},
 
 	# Verify the record
-	{ 'command' => 'dig TXT '.$test_domain,
-	  'grep' => 'spf',
+	{ 'command' => 'dig TXT '.$test_domain.' ; dig SPF '.$test_domain,
+	  'grep' => 'v=spf1',
 	  'sleep' => 5,
 	},
 
@@ -485,8 +485,8 @@ $domains_tests = [
 	},
 
 	# Verify the record is gone
-	{ 'command' => 'dig TXT '.$test_domain,
-	  'antigrep' => 'spf',
+	{ 'command' => 'dig TXT '.$test_domain.' ; dig SPF '.$test_domain,
+	  'antigrep' => 'v=spf1',
 	  'sleep' => 5,
 	},
 
@@ -1186,6 +1186,20 @@ $script_tests = [
 		      @create_args, ],
         },
 
+	# Upgrade PHP version on the domain if possible
+	{ 'command' => 'set-php-directory.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+                      [ 'dir', '.' ],
+		      [ 'version', '7.0' ] ],
+	  'ignorefail' => 1,
+	},
+	{ 'command' => 'set-php-directory.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+                      [ 'dir', '.' ],
+		      [ 'version', '7.2' ] ],
+	  'ignorefail' => 1,
+	},
+
 	# List all scripts
 	{ 'command' => 'list-available-scripts.pl',
 	  'grep' => 'WordPress',
@@ -1202,7 +1216,7 @@ $script_tests = [
 
 	# Check that it works
 	{ 'command' => $wget_command.'http://'.$test_domain.'/wordpress/',
-	  'grep' => 'WordPress.*Installation',
+	  'grep' => 'WordPress.*Installation|Just another WordPress site',
 	},
 
 	# Check script list
@@ -1235,7 +1249,7 @@ $script_tests = [
 
 	# Check that it works with it's own DB
 	{ 'command' => $wget_command.'http://'.$test_domain.'/wordpress/',
-	  'grep' => 'WordPress.*Installation',
+	  'grep' => 'WordPress.*Installation|Just another WordPress site',
 	},
 
 	# Check script list
@@ -1276,7 +1290,7 @@ $script_tests = [
 
 	# Check that it works
 	{ 'command' => $wget_command.'http://'.$test_domain.'/',
-	  'grep' => 'SugarCRM',
+	  'grep' => 'SugarCRM|modules/Users/login.css',
 	},
 
 	# Un-install
@@ -3000,6 +3014,96 @@ $remotebackup_tests = [
 
 $enc_remotebackup_tests = &convert_to_encrypted($remotebackup_tests);
 
+$webmin_backup_dir = "/tmp/webminbackup-test";
+$webmin_backup_prefix = "webmin://$webmin_user:$webmin_pass\@localhost$webmin_backup_dir";
+
+$webminbackup_tests = [
+	# Create a domain for the backup target
+	{ 'command' => 'create-domain.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+		      [ 'desc', 'Test domain' ],
+		      [ 'pass', 'smeg' ],
+		      [ 'dir' ], [ 'unix' ], [ 'dns' ], [ $web ], [ 'mail' ],
+		      [ 'logrotate' ],
+		      [ 'style' => 'construction' ],
+		      [ 'content' => 'Test home page' ],
+		      @create_args, ],
+        },
+
+	# Create a sub-server
+	{ 'command' => 'create-domain.pl',
+	  'args' => [ [ 'domain', $test_subdomain ],
+		      [ 'parent', $test_domain ],
+		      [ 'prefix', 'example2' ],
+		      [ 'desc', 'Test sub-domain' ],
+		      [ 'dir' ], [ $web ], [ 'dns' ], [ 'mail' ],
+		      [ 'logrotate' ],
+		      @create_args, ],
+	},
+
+	# Create backup dir
+	{ 'command' => 'mkdir -p '.$webmin_backup_dir },
+
+	# Backup via Webmin
+	{ 'command' => 'backup-domain.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+		      [ 'all-features' ],
+		      [ 'dest', "$webmin_backup_prefix/$test_domain.tar.gz" ] ],
+	},
+	{ 'command' => 'backup-domain.pl',
+	  'args' => [ [ 'domain', $test_subdomain ],
+		      [ 'all-features' ],
+		      [ 'dest', "$webmin_backup_prefix/$test_subdomain.tar.gz" ] ],
+	},
+
+	# Restore via Webmin
+	{ 'command' => 'restore-domain.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+		      [ 'all-features' ],
+		      [ 'source', "$webmin_backup_prefix/$test_domain.tar.gz" ] ],
+	},
+
+	# Restore sub-domain via Webmin
+	{ 'command' => 'restore-domain.pl',
+	  'args' => [ [ 'domain', $test_subdomain ],
+		      [ 'all-features' ],
+		      [ 'source', "$webmin_backup_prefix/$test_subdomain.tar.gz" ] ],
+	},
+
+	# Backup via Webmin in home format
+	{ 'command' => 'backup-domain.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+		      [ 'domain', $test_subdomain ],
+		      [ 'all-features' ],
+		      [ 'newformat' ],
+		      [ 'dest', "$webmin_backup_prefix/backups" ] ],
+	},
+
+	# Restore via Webmin in home format
+	{ 'command' => 'restore-domain.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+		      [ 'domain', $test_subdomain ],
+		      [ 'all-features' ],
+		      [ 'source', "$webmin_backup_prefix/backups" ] ],
+	},
+
+	# Cleanup the backup domain
+	{ 'command' => 'delete-domain.pl',
+	  'args' => [ [ 'domain', $test_domain ] ],
+	  'cleanup' => 1,
+	},
+
+	# Cleanup backup dir
+	{ 'command' => 'rm -rf '.$webmin_backup_dir,
+	  'cleanup' => 1,
+	},
+	];
+if (!$webmin_user || !$webmin_pass) {
+	$webminbackup_tests = [ { 'command' => 'echo Missing user or password ; false' } ];
+	}
+
+$enc_webminbackup_tests = &convert_to_encrypted($webminbackup_tests);
+
 $s3_backup_prefix = "s3://$config{'s3_akey'}:$config{'s3_skey'}\@virtualmin-test-backup-bucket";
 $s3backup_tests = [
 	# Create target bucket
@@ -3123,6 +3227,7 @@ $s3backup_tests = [
 		      [ 'strftime' ],
 		      [ 'purge', '0.00001' ] ],
 	  'grep' => 'Deleting file',
+	  'sleep' => 5,
 	},
 
 	# Cleanup the backup domain
@@ -3412,6 +3517,18 @@ $dropboxbackup_tests = [
 		      [ 'dest', "$dropbox_backup_prefix/$test_subdomain.tar.gz" ] ],
 	},
 
+	# Backup to Dropbox again, to test that over-writing works
+	{ 'command' => 'backup-domain.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+		      [ 'all-features' ],
+		      [ 'dest', "$dropbox_backup_prefix/$test_domain.tar.gz" ] ],
+	},
+	{ 'command' => 'backup-domain.pl',
+	  'args' => [ [ 'domain', $test_subdomain ],
+		      [ 'all-features' ],
+		      [ 'dest', "$dropbox_backup_prefix/$test_subdomain.tar.gz" ] ],
+	},
+
 	# Restore from Dropbox
 	{ 'command' => 'restore-domain.pl',
 	  'args' => [ [ 'domain', $test_domain ],
@@ -3427,6 +3544,15 @@ $dropboxbackup_tests = [
 	},
 
 	# Backup to Dropbox in home format
+	{ 'command' => 'backup-domain.pl',
+	  'args' => [ [ 'domain', $test_domain ],
+		      [ 'domain', $test_subdomain ],
+		      [ 'all-features' ],
+		      [ 'newformat' ],
+		      [ 'dest', $dropbox_backup_prefix ] ],
+	},
+
+	# Backup to Dropbox in home format again, to test overwriting
 	{ 'command' => 'backup-domain.pl',
 	  'args' => [ [ 'domain', $test_domain ],
 		      [ 'domain', $test_subdomain ],
@@ -8081,6 +8207,8 @@ $alltests = { '_config' => $_config_tests,
 	      'enc_rsbackup' => $enc_rsbackup_tests,
 	      'configbackup' => $configbackup_tests,
 	      'enc_configbackup' => $enc_configbackup_tests,
+	      'webminbackup' => $webminbackup_tests,
+	      'enc_webminbackup' => $enc_webminbackup_tests,
 	      'ipbackup' => $ipbackup_tests,
 	      'purge' => $purge_tests,
 	      'incremental' => $incremental_tests,
@@ -8349,8 +8477,9 @@ if ($t->{'save'}) {
 	$saved_vars{$t->{'save'}} = $out;
 	print "    .. saved $t->{'save'} value $out\n";
 	}
-print $t->{'fail'} ? "    .. successfully failed\n"
-		   : "    .. success\n";
+print $t->{'fail'} ?             "    .. successfully failed\n" :
+      $t->{'ignorefail'} && $? ? "    .. failed but ignored\n" :
+		                 "    .. success\n";
 return 1;
 }
 

@@ -19,6 +19,8 @@ if ($config{'backup_dest'}) {
 			  'parent' => $config{'backup_parent'},
 			  'all' => $config{'backup_all'},
 			  'doms' => $config{'backup_doms'},
+			  'plan' => $config{'backup_plan'},
+			  'reseller' => $config{'backup_reseller'},
 			  'feature_all' => $config{'backup_feature_all'},
 			  'email' => $config{'backup_email'},
 			  'email_err' => $config{'backup_email_err'},
@@ -28,6 +30,7 @@ if ($config{'backup_dest'}) {
 			  'before' => $config{'backup_before'},
 			  'after' => $config{'backup_after'},
 			  'exclude' => $config{'backup_exclude'},
+			  'key' => $config{'backup_key'},
 			 );
 	local @bf;
 	foreach $f (&get_available_backup_features(), &list_backup_plugins()) {
@@ -110,6 +113,8 @@ if ($backup->{'id'} == 1) {
 	$config{'backup_parent'} = $backup->{'parent'};
 	$config{'backup_all'} = $backup->{'all'};
 	$config{'backup_doms'} = $backup->{'doms'};
+	$config{'backup_plan'} = $backup->{'plan'};
+	$config{'backup_reseller'} = $backup->{'reseller'};
 	$config{'backup_feature_all'} = $backup->{'feature_all'};
 	$config{'backup_email'} = $backup->{'email'};
 	$config{'backup_email_err'} = $backup->{'email_err'};
@@ -119,6 +124,7 @@ if ($backup->{'id'} == 1) {
 	$config{'backup_before'} = $backup->{'before'};
 	$config{'backup_after'} = $backup->{'after'};
 	$config{'backup_exclude'} = $backup->{'exclude'};
+	$config{'backup_key'} = $backup->{'key'};
 	local @bf = split(/\s+/, $backup->{'features'});
 	foreach $f (&get_available_backup_features(), &list_backup_plugins()) {
 		$config{'backup_feature_'.$f} = &indexof($f, @bf) >= 0 ? 1 : 0;
@@ -252,6 +258,7 @@ sub backup_domains
 local ($desturls, $doms, $features, $dirfmt, $skip, $opts, $homefmt, $vbs,
        $mkdir, $onebyone, $asowner, $cbfunc, $increment, $onsched, $key,
        $kill) = @_;
+$opts->{'skip'} = $skip;
 $desturls = [ $desturls ] if (!ref($desturls));
 local $backupdir;
 local $transferred_sz;
@@ -287,6 +294,7 @@ if ($key && $config{'compression'} == 3) {
 local $anyremote;
 local $anylocal;
 local $rsh;	# Rackspace cloud files handle
+local @okurls;
 foreach my $desturl (@$desturls) {
 	local ($mode, $user, $pass, $server, $path, $port) =
 		&parse_backup_url($desturl);
@@ -295,8 +303,6 @@ foreach my $desturl (@$desturls) {
 		return (0, 0, $doms);
 		}
 	local $starpass = "*" x length($pass);
-	$anyremote = 1 if ($mode > 0);
-	$anylocal = 1 if ($mode == 0);
 	if ($mode == 0 && $asd) {
 		# Always create virtualmin-backup directory
 		$mkdir = 1;
@@ -308,7 +314,7 @@ foreach my $desturl (@$desturls) {
 		if ($ftperr) {
 			$ftperr =~ s/\Q$pass\E/$starpass/g;
 			&$first_print(&text('backup_eftptest', $ftperr));
-			return (0, 0, $doms);
+			next;
 			}
 		if ($dirfmt) {
 			# Also create the destination directory and all parents
@@ -368,7 +374,7 @@ foreach my $desturl (@$desturls) {
 		if ($scperr) {
 			$scperr =~ s/\Q$pass\E/$starpass/g;
 			&$first_print(&text('backup_escptest', $scperr));
-			return (0, 0, $doms);
+			next;
 			}
 
 		# Clean up dummy file if possible
@@ -406,35 +412,36 @@ foreach my $desturl (@$desturls) {
 		# Connect to S3 service and create bucket
 		if (!$path && !$dirfmt) {
 			&$first_print($text{'backup_es3nopath'});
-			return (0, 0, $doms);
+			next;
 			}
 		local $cerr = &check_s3();
 		if ($cerr) {
 			&$first_print($cerr);
-			return (0, 0, $doms);
+			next;
 			}
 		local $err = &init_s3_bucket($user, $pass, $server,
-					     $s3_upload_tries);
+					     $s3_upload_tries,
+					     $config{'s3_location'});
 		if ($err) {
 			&$first_print($err);
-			return (0, 0, $doms);
+			next;
 			}
 		}
 	elsif ($mode == 6) {
 		# Connect to Rackspace cloud files and create container
 		if (!$path && !$dirfmt) {
 			&$first_print($text{'backup_ersnopath'});
-			return (0, 0, $doms);
+			next;
 			}
 		$rsh = &rs_connect($config{'rs_endpoint'}, $user, $pass);
 		if (!ref($rsh)) {
 			&$first_print($rsh);
-			return (0, 0, $doms);
+			next;
 			}
 		local $err = &rs_create_container($rsh, $server);
 		if ($err) {
 			&$first_print($err);
-			return (0, 0, $doms);
+			next;
 			}
 
 		}
@@ -443,14 +450,15 @@ foreach my $desturl (@$desturls) {
 		local $buckets = &list_gcs_buckets();
 		if (!ref($buckets)) {
 			&$first_print($buckets);
-			return (0, 0, $doms);
+			next;
 			}
 		my ($already) = grep { $_->{'name'} eq $server } @$buckets;
 		if (!$already) {
-			local $err = &create_gcs_bucket($server);
+			local $err = &create_gcs_bucket(
+				$server, $config{'google_location'});
 			if ($err) {
 				&$first_print($err);
-				return (0, 0, $doms);
+				next;
 				}
 			}
 		}
@@ -463,7 +471,7 @@ foreach my $desturl (@$desturls) {
 			my $files = &list_dropbox_files($parent);
 			if (!ref($files)) {
 				&$first_print($files);
-				return (0, 0, $doms);
+				next;
 				}
 			my ($already) =
 			  grep { $_->{'path_display'} eq "/".$server } @$files;
@@ -471,9 +479,28 @@ foreach my $desturl (@$desturls) {
 				my $err = &create_dropbox_dir("/".$server);
 				if ($err) {
 					&$first_print($err);
-					return (0, 0, $doms);
+					next;
 					}
 				}
+			}
+		}
+	elsif ($mode == 9) {
+		# Connect to the remote Webmin server
+		local $w = &dest_to_webmin($desturl);
+		eval {
+			local $main::error_must_die = 1;
+			&remote_foreign_require($w, "webmin");
+			if ($dirfmt && $path ne "/") {
+				# Remotely create the destination dir
+				&remote_foreign_call($w, "webmin", "make_dir",
+						     $path, undef, 1);
+				}
+			};
+		if ($@) {
+			my $err = $@;
+			$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+			&$first_print($err);
+			next;
 			}
 		}
 	elsif ($mode == 0) {
@@ -491,19 +518,19 @@ foreach my $desturl (@$desturls) {
 				if ($derr) {
 					&$first_print(&text('backup_emkdir',
 						   "<tt>$desturl</tt>", $derr));
-					return (0, 0, $doms);
+					next;
 					}
 				}
 			else {
 				&$first_print(&text('backup_edirtest',
 						    "<tt>$desturl</tt>"));
-				return (0, 0, $doms);
+				next;
 				}
 			}
 		elsif (!$dirfmt && -d $desturl) {
 			&$first_print(&text('backup_enotdirtest',
 					    "<tt>$desturl</tt>"));
-			return (0, 0, $doms);
+			next;
 			}
 		if (!$dirfmt && $mkdir) {
 			# Create parent directories if requested
@@ -515,15 +542,31 @@ foreach my $desturl (@$desturls) {
 				if ($derr) {
 					&$first_print(&text('backup_emkdir',
 						   "<tt>$dirdest</tt>", $derr));
-					return (0, 0, $doms);
+					next;
 					}
 				}
 			}
 		}
+
+	# If we made it this far, the URL is valid
+	push(@okurls, $desturl);
+	$anyremote = 1 if ($mode > 0);
+	$anylocal = 1 if ($mode == 0);
 	}
+if (!@okurls) {
+	# No URLs were valid
+	return (0, 0, $doms);
+	}
+@$desturls = @okurls;
 if (!$anyremote) {
 	# If all backups are local, there is no point transferring one by one
 	$onebyone = 0;
+	}
+
+if ($homefmt && $dirfmt && &indexof("dir", @$features) < 0) {
+	# A home-format backup was requested, but the home directory was not
+	# included. Silently switch to dir-format so that it still works.
+	$homefmt = 0;
 	}
 
 if (!$homefmt) {
@@ -533,18 +576,11 @@ if (!$homefmt) {
 		&make_dir($backupdir, 0700);
 		}
 	}
-else {
-	# A home-format backup can only be used if the home directory is
-	# included, and if we are doing one per domain, and if all domains
-	# *have* a home directory
-	if (!$dirfmt) {
-		&$first_print($text{'backup_ehomeformat'});
-		return (0, 0, $doms);
-		}
-	if (&indexof("dir", @$features) == -1) {
-		&$first_print($text{'backup_ehomeformat2'});
-		return (0, 0, $doms);
-		}
+
+if ($homefmt && !$dirfmt) {
+	# Home format must imply one-per-domain format
+	&$first_print($text{'backup_ehomeformat'});
+	return (0, 0, $doms);
 	}
 
 # Work out where to write the final tar files to
@@ -697,36 +733,39 @@ DOMAIN: foreach $d (sort { $a->{'dom'} cmp $b->{'dom'} } @$doms) {
 	local $dok = 1;
 	local @donefeatures;
 
-	if ($homefmt && !$d->{'dir'} && !-d $d->{'home'}) {
-		# Create temporary home directory
-		&make_dir($d->{'home'}, 0755);
-		&set_ownership_permissions($d->{'uid'}, $d->{'gid'}, undef,
-					   $d->{'home'});
-		$d->{'dir'} = 1;
-		push(@cleanuphomes, $d);
-		}
-	elsif ($homefmt && $d->{'dir'} && !-d $d->{'home'}) {
-		# Missing home dir which we need, so create it
-		&make_dir($d->{'home'}, 0755);
-		&set_ownership_permissions($d->{'uid'}, $d->{'gid'}, undef,
-					   $d->{'home'});
+	if ($homefmt && !-d $d->{'home'}) {
+		# Create home directory
+		if (&has_domain_user($d) && $d->{'parent'}) {
+			# As domain user (sub-server, likely an alias)
+			&make_dir_as_domain_user($d, $d->{'home'}, 0755, 1);
+			&set_permissions_as_domain_user($d, 0755, $d->{'home'});
+			}
+		else {
+			# As root (top-level, which should never happen)
+			&make_dir($d->{'home'}, 0755);
+			&set_ownership_permissions(
+				$d->{'uid'}, $d->{'gid'}, undef, $d->{'home'});
+			}
+		if (!$d->{'dir'}) {
+			# Only temporary
+			$d->{'dir'} = 1;
+			push(@cleanuphomes, $d);
+			}
 		}
 	elsif ($homefmt && !$d->{'dir'} && -d $d->{'home'}) {
 		# Home directory actually exists, so enable it on the domain
 		$d->{'dir'} = 1;
 		}
 
+	# Turn off quotas for the domain so that writes as the domain owner
+	# don't fail
+	&disable_quotas($d);
+
 	local $lockdir;
 	if ($homefmt) {
-		# Backup goes to a sub-dir of the home
+		# Backup for most features goes to a sub-dir of the home, which
+		# is then included in a tar of the home directory
 		$lockdir = $backupdir = "$d->{'home'}/.backup";
-		my $pid = &test_lock($lockdir);
-		if ($pid) {
-			&$second_print(&text('backup_ebackupdirlock',
-				"<tt>$backupdir</tt>", $pid));
-			$dok = 1;
-			goto DOMAINFAILED;
-			}
 		&lock_file($lockdir);
 		&execute_command("rm -rf ".quotemeta($backupdir));
 		&disable_quotas($asd) if ($asd);
@@ -738,11 +777,9 @@ DOMAIN: foreach $d (sort { $a->{'dom'} cmp $b->{'dom'} } @$doms) {
 			$dok = 1;
 			goto DOMAINFAILED;
 			}
+		# If this script exits unexpectedly, cleaup the temporary dir
+		push(@main::temporary_files, $backupdir);
 		}
-
-	# Turn off quotas for the domain so that writes as the domain owner
-	# don't fail
-	&disable_quotas($d);
 
 	&$indent_print();
 	foreach $f (@backupfeatures) {
@@ -762,8 +799,19 @@ DOMAIN: foreach $d (sort { $a->{'dom'} cmp $b->{'dom'} } @$doms) {
 			else {
 				$ffile = "$backupdir/$d->{'dom'}_$f";
 				}
-			$fok = &$bfunc($d, $ffile, $opts->{$f}, $homefmt,
-				       $increment, $asd, $opts, $key);
+			eval {
+				local $main::error_must_die = 1;
+				$fok = &$bfunc(
+					$d, $ffile, $opts->{$f}, $homefmt,
+					$increment, $asd, $opts, $key);
+				};
+			if ($@) {
+				my $err = $@;
+				$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+				&$second_print(&text('backup_efeatureeval',
+						     $f, $err));
+				$fok = 0;
+				}
 			}
 		elsif (&indexof($f, &list_backup_plugins()) >= 0 &&
 		       $d->{$f}) {
@@ -932,6 +980,23 @@ DOMAIN: foreach $d (sort { $a->{'dom'} cmp $b->{'dom'} } @$doms) {
 					  \$err, $port, $asuser) if (!$err);
 				$err =~ s/\Q$pass\E/$starpass/g;
 				}
+			elsif ($mode == 9) {
+				# Via Webmin file transfer
+				&$first_print(&text('backup_upload9',
+						    "<tt>$server</tt>"));
+				local $w = &dest_to_webmin($desturl);
+				eval {
+					local $main::error_must_die = 1;
+					&remote_write($w, "$dest/$df",
+							  "$path/$df");
+					&remote_write($w, $infotemp,
+							  "$path/$df.info");
+					&remote_write($w, $domtemp,
+							  "$path/$df.dom");
+					};
+				$err = $@;
+				$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+				}
 			elsif ($mode == 3) {
 				# Via S3 upload
 				&$first_print($text{'backup_upload3'});
@@ -1062,7 +1127,8 @@ if ($ok) {
 			local $comp = "cat";
 			if ($config{'compression'} == 0) {
 				$destfile .= ".gz";
-				$comp = "gzip -c $config{'zip_args'}";
+				$comp = &get_gzip_command().
+					" -c $config{'zip_args'}";
 				}
 			elsif ($config{'compression'} == 1) {
 				$destfile .= ".bz2";
@@ -1128,7 +1194,8 @@ if ($ok) {
 		# Tar up the directory into the final file
 		local $comp = "cat";
 		if ($dest =~ /\.(gz|tgz)$/i) {
-			$comp = "gzip -c $config{'zip_args'}";
+			$comp = &get_gzip_command().
+				" -c $config{'zip_args'}";
 			}
 		elsif ($dest =~ /\.(bz2|tbz2)$/i) {
 			$comp = &get_bzip2_command().
@@ -1189,7 +1256,7 @@ if (@$vbs && ($homefmt || $dirfmt)) {
 	local $vdestfile;
 	local ($out, $err);
 	if (&has_command("gzip")) {
-		$comp = "gzip -c $config{'zip_args'}";
+		$comp = &get_gzip_command()." -c $config{'zip_args'}";
 		$vdestfile = "virtualmin.tar.gz";
 		}
 	else {
@@ -1608,6 +1675,87 @@ foreach my $desturl (@$desturls) {
 		&unlink_file($domtemp);
 		&$second_print($text{'setup_done'}) if ($ok);
 		}
+	elsif ($ok && $mode == 9 && (@destfiles || !$dirfmt)) {
+		# Upload to Webmin server
+		&$first_print(&text('backup_upload9', "<tt>$server</tt>"));
+		local $w = &dest_to_webmin($desturl);
+		local $infotemp = &transname();
+		local $domtemp = &transname();
+		if ($dirfmt) {
+			# Need to upload all backup files in the directory
+			local $tstart = time();
+			eval {
+				local $main::error_must_die = 1;
+				foreach my $df (@destfiles) {
+					&remote_write($w, "$dest/$df","$path/$df");
+					}
+				};
+			$err = $@;
+			$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+
+			# Upload each domain's .info and .dom files
+			foreach my $df (@destfiles) {
+				local $d = $destfiles_map{$df};
+				local $n = $d eq "virtualmin" ? "virtualmin"
+							      : $d->{'dom'};
+				local $binfo = { $n => $donefeatures{$n} };
+				local $bdom = { $n => $d };
+				&uncat_file($infotemp,
+					    &serialise_variable($binfo));
+				&uncat_file($domtemp,
+					    &serialise_variable($bdom));
+				eval {
+					local $main::error_must_die = 1;
+					&remote_write($w, $infotemp,
+						      $path."/$df.info");
+					&remote_write($w, $domtemp,
+						      $path."/$df.dom");
+					};
+				}
+			if (!$err && $asd) {
+				# Log bandwidth used by domain
+				foreach my $df (@destfiles) {
+					local $d = $destfiles_map{$df};
+					if ($d) {
+						local @tst = stat("$dest/$df");
+						&record_backup_bandwidth(
+							$d, 0, $tst[7],
+							$tstart, time());
+						}
+					}
+				}
+
+			}
+		else {
+			# Just a single file
+			local $tstart = time();
+			&uncat_file($infotemp,
+				    &serialise_variable(\%donefeatures));
+			&uncat_file($domtemp,
+				    &serialise_variable(\%donedoms));
+			eval {
+				local $main::error_must_die = 1;
+				&remote_write($w, $dest, $path);
+				&remote_write($w, $infotemp, $path.".info");
+				&remote_write($w, $domtemp, $path.".dom");
+				};
+			$err = $@;
+			$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+			if ($asd && !$err) {
+				# Log bandwidth used by whole transfer
+				local @tst = stat($dest);
+				&record_backup_bandwidth($asd, 0, $tst[7], 
+							 $tstart, time());
+				}
+			}
+		if ($err) {
+			&$second_print(&text('backup_uploadfailed', $err));
+			$ok = 0;
+			}
+		&unlink_file($infotemp);
+		&unlink_file($domtemp);
+		&$second_print($text{'setup_done'}) if ($ok);
+		}
 	elsif ($ok && $mode == 0 && (@destfiles || !$dirfmt) &&
 	       $path ne $path0) {
 		# Copy to another local directory
@@ -1718,7 +1866,7 @@ foreach my $lockfile (@lockfiles) {
 
 # For any domains that failed and were full backups, clear the incremental
 # file so that future incremental backups aren't diffs against it
-if ($incremental == 0 && &has_incremental_tar()) {
+if ($increment == 0 && &has_incremental_tar()) {
 	foreach my $d (@errdoms) {
 		if ($d->{'id'}) {
 			&unlink_file("$incremental_backups_dir/$d->{'id'}");
@@ -1794,6 +1942,7 @@ if ($mode > 0) {
 		      $mode == 6 ? $text{'restore_downloadrs'} :
 		      $mode == 7 ? $text{'restore_downloadgc'} :
 		      $mode == 8 ? $text{'restore_downloaddb'} :
+		      $mode == 9 ? $text{'restore_downloadwebmin'} :
 				   $text{'restore_downloadssh'});
 	if ($mode == 3) {
 		local $cerr = &check_s3();
@@ -1901,7 +2050,7 @@ if ($ok) {
 			}
 		else {
 			# Other formats use uncompress | tar
-			local $comp = $cf == 1 ? "gunzip -c" :
+			local $comp = $cf == 1 ? &get_gunzip_command()." -c" :
 				      $cf == 2 ? "uncompress -c" :
 				      $cf == 3 ? &get_bunzip2_command()." -c" :
 						 "cat";
@@ -1933,9 +2082,18 @@ if ($ok) {
 
 		# If encrypted, check signature too
 		if ($key) {
-			if ($lerr !~ /Good\s+signature\s+from/ ||
-			    $lerr !~ /Signature\s+made.*key\s+ID\s+(\S+)/ ||
-			    $1 ne $key->{'key'}) {
+			my $keyok = 0;
+			$lerr =~ s/\r/ /g;
+			my $l = length($key->{'key'});
+			if ($lerr =~ /Good\s+signature\s+from/) {
+				if ($lerr =~ /(key,\s+ID|using\s+\S+\s+key)\s+([A-Za-z0-9]+)/ && substr($2, -$l) eq $key->{'key'}) {
+					$keyok = 1;
+					}
+				elsif ($lerr =~ /(key\s+ID)\s+([A-Za-z0-9]+)/ && substr($2, -$l) eq $key->{'key'}) {
+					$keyok = 1;
+					}
+				}
+			if (!$keyok) {
 				&$second_print(&text('restore_badkey',
 					$key->{'key'},
 					"<pre>".&html_escape($lerr)."</pre>"));
@@ -2105,7 +2263,7 @@ if ($ok) {
 				$oldweb = 'virtualmin-nginx';
 				}
 			if ($oldweb &&
-			    &indexof($oldweb, @features, @plugins) < 0) {
+			    &indexof($oldweb, @config_features, @plugins) < 0) {
 				$d->{$oldweb} = 0;
 				my $newweb = &domain_has_website();
 				$d->{$newweb} = 1 if ($newweb);
@@ -2216,8 +2374,8 @@ if ($ok) {
 					}
 				}
 
-			# If this was a DNS sub-domain and the parent no longer exists, use a
-			# separate zone file
+			# If this was a DNS sub-domain and the parent no longer
+			# exists, use a separate zone file
 			if ($d->{'dns_subof'}) {
 				my $dnsparent = &get_domain($d->{'dns_subof'});
 				if (!$dnsparent) {
@@ -2254,9 +2412,11 @@ if ($ok) {
 				}
 			else {
 				# UID and GID are the same - but check for a
-				# clash with existing users
+				# clash with existing users (unless replicating,
+				# in which case they may be in shared storage)
 				if ($taken{$d->{'uid'}} &&
-				    $taken{$d->{'uid'}} ne 'old') {
+				    $taken{$d->{'uid'}} ne 'old' &&
+				    !$opts->{'repl'}) {
 					&$second_print(&text('restore_euid',
 							     $d->{'uid'}));
 					$ok = 0;
@@ -2264,7 +2424,8 @@ if ($ok) {
 					else { last DOMAIN; }
 					}
 				if ($gtaken{$d->{'gid'}} &&
-				    $gtaken{$d->{'gid'}} ne 'old') {
+				    $gtaken{$d->{'gid'}} ne 'old' &&
+				    !$opts->{'repl'}) {
 					&$second_print(&text('restore_egid',
 							     $d->{'gid'}));
 					$ok = 0;
@@ -2286,6 +2447,9 @@ if ($ok) {
 				# Fix up setings that reference the home
 				$d->{'ssl_cert'} =~s/\Q$oldhome\E/$d->{'home'}/;
 				$d->{'ssl_key'} =~ s/\Q$oldhome\E/$d->{'home'}/;
+				$d->{'ssl_chain'} =~ s/\Q$oldhome\E/$d->{'home'}/;
+				$d->{'ssl_everything'} =~ s/\Q$oldhome\E/$d->{'home'}/;
+				$d->{'ssl_combined'} =~ s/\Q$oldhome\E/$d->{'home'}/;
 				}
 
 			# Fix up the IPv4 address if needed
@@ -2492,6 +2656,7 @@ if ($ok) {
 			&set_provision_features($d);
 
 			# Check for clashes
+			$d->{'wasmissing'} = 1;
 			local $cerr = &virtual_server_clashes($d);
 			if ($cerr) {
 				&$second_print(&text('restore_eclash', $cerr));
@@ -2520,13 +2685,20 @@ if ($ok) {
 			# Finally, create it
 			&$indent_print();
 			delete($d->{'missing'});
-			$d->{'wasmissing'} = 1;
 			$d->{'nocreationmail'} = 1;
 			$d->{'nocreationscripts'} = 1;
 			$d->{'nocopyskel'} = 1;
-			&create_virtual_server($d, $parentdom,
+			$d->{'auto_letsencrypt'} = 0;
+			my $err = &create_virtual_server($d, $parentdom,
 			       $parentdom ? $parentdom->{'user'} : undef, 1);
 			&$outdent_print();
+			if ($err) {
+				&$second_print(
+					&text('restore_erecreate', $err));
+				$ok = 0;
+				if ($continue) { next DOMAIN; }
+				else { last DOMAIN; }
+				}
 
 			# If the domain was disabled in the backup, disable it
 			# again now
@@ -2919,7 +3091,7 @@ if (-d $backup) {
 	# A directory of backup files, one per domain
 	opendir(DIR, $backup);
 	foreach my $f (readdir(DIR)) {
-		next if ($f eq "." || $f eq ".." || $f =~ /\.(info|dom)$/);
+		next if ($f =~ /^\./ || $f =~ /\.(info|dom)$/);
 		local ($cont, $fdoms);
 		if ($wantdoms) {
 			($cont, $fdoms) = &backup_contents(
@@ -2970,7 +3142,7 @@ else {
 		else {
 			$catter = "cat $q";
 			}
-		$comp = $cf == 1 ? "gunzip -c" :
+		$comp = $cf == 1 ? &get_gunzip_command()." -c" :
 			$cf == 2 ? "uncompress -c" :
 			$cf == 3 ? &get_bunzip2_command()." -c" :
 				   "cat";
@@ -3204,7 +3376,7 @@ if ($mode == 1) {
 		return $err if (!$list);
 		foreach $f (@$list) {
 			$f =~ s/^$path[\\\/]//;
-			next if ($f eq "." || $f eq ".." || $f eq "");
+			next if ($f =~ /^\./ || $f eq "");
 			next if ($infoonly && $f !~ /\Q$sfx\E$/);
 			if (@$domnames && $f =~ /^(\S+)\.(tar.*|zip)$/i &&
 			    $f !~ /^virtualmin\.(tar.*|zip)$/i) {
@@ -3471,6 +3643,80 @@ elsif ($mode == 7 || $mode == 8) {
 		return $err if ($err);
 		}
 	}
+elsif ($mode == 9) {
+	# Download from Webmin server
+	my $w = &dest_to_webmin($url);
+	if ($infoonly) {
+		# First try file with .info or .dom extension
+		eval {
+			local $main::error_must_die = 1;
+			&remote_read($w, $temp, $path.$sfx);
+			};
+		$err = $@;
+		$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+		if ($err) {
+			# Fall back to all .info or .dom files in directory
+			&make_dir($temp, 0700);
+			eval {
+				local $main::error_must_die = 1;
+				my $fls = &remote_eval($w, "webmin",
+						     "[ glob('$path/*$sfx') ]");
+				foreach my $f (@$fls) {
+					$f =~ s/^.*\///;
+					&remote_read($w, "$temp/$f",
+							 "$path/$f");
+					}
+				};
+			$err = $@;
+			$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+			}
+		}
+	else {
+		# If a list of domain names was given, first try to scp down
+		# only the files for those domains in the directory
+		local $gotfiles = 0;
+		if (@$domnames) {
+			&unlink_file($temp);
+			&make_dir($temp, 0711);
+			eval {
+				local $main::error_must_die = 1;
+				foreach my $dn (@$domnames) {
+					my $fn = $dn.".tar.gz";
+					&remote_read($w, "$temp/$fn$sfx",
+						     "$path/$fn$sfx");
+					if (!-s "$temp/$fn$sfx") {
+						# Can happen if path is a dir
+						&unlink_file("$temp/$fn$sfx");
+						die "Empty file";
+						}
+					}
+				};
+			$gotfiles = 1 if (!$@);
+			}
+
+		if (!$gotfiles) {
+			# Download the whole file or directory
+			eval {
+				local $main::error_must_die = 1;
+				my $fls = &remote_eval($w, "webmin",
+						     "[ glob('$path/*') ]");
+				foreach my $f (@$fls) {
+					$f =~ s/^.*\///;
+					&remote_read($w, "$temp/$f",
+							 "$path/$f");
+					}
+				if (!@$fls) {
+					# Glob returned nothing, so it's a file
+					&unlink_file($temp);
+					&remote_read($w, $temp, $path);
+					}
+				};
+			$err = $@;
+			$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+			}
+		}
+	return $err if ($err);
+	}
 
 $main::download_backup_cache{$url} = $temp if (!$infoonly);
 return undef;
@@ -3499,7 +3745,8 @@ return $rv;
 # parse_backup_url(string)
 # Converts a URL like ftp:// or a filename into its components. These will be
 # protocol (1 for FTP, 2 for SSH, 0 for local, 3 for S3, 4 for download,
-# 5 for upload, 6 for rackspace), login, password, host, path and port
+# 5 for upload, 6 for rackspace, 7 for GCS, 8 for Dropbox, 9 for Webmin), login,
+# password, host, path and port
 sub parse_backup_url
 {
 local ($url) = @_;
@@ -3517,6 +3764,18 @@ elsif ($url =~ /^ssh:\/\/([^:]*):(.*)\@\[([^\]]+)\](:\d+)?:?(\/.*)$/ ||
        $url =~ /^ssh:\/\/([^:]*):(.*)\@([^\/:\@]+)(:\d+)?:(.+)$/) {
 	# SSH url with no @ in password
 	@rv = (2, $1, $2, $3, $5, $4 ? substr($4, 1) : 22);
+	}
+elsif ($url =~ /^webmin:\/\/([^:]*):(.*)\@\[([^\]]+)\](:\d+)?:?(\/.*)$/ ||
+       $url =~ /^webmin:\/\/([^:]*):(.*)\@\[([^\]]+)\](:\d+)?:(.+)$/ ||
+       $url =~ /^webmin:\/\/([^:]*):(.*)\@([^\/:\@]+)(:\d+)?:?(\/.*)$/ ||
+       $url =~ /^webmin:\/\/([^:]*):(.*)\@([^\/:\@]+)(:\d+)?:(.+)$/) {
+	# Webmin URL with username and password
+	@rv = (9, $1, $2, $3, $5, $4 ? substr($4, 1) : 10000);
+	}
+elsif ($url =~ /^webmin:\/\/([^\/:\@]+)(:\d+)?:?(\/.*)$/ ||
+       $url =~ /^webmin:\/\/([^\/:\@]+)(:\d+)?:(.+)$/) {
+	# Webmin URL with no login
+	@rv = (9, undef, undef, $1, $3, $2 ? substr($2, 1) : 10000);
 	}
 elsif ($url =~ /^(s3|s3rrs):\/\/([^:]*):([^\@]*)\@([^\/]+)(\/(.*))?$/) {
 	# S3 with a username and password
@@ -3617,10 +3876,14 @@ elsif ($proto == 8) {
 		&text('backup_nicedbp', "<tt>$host</tt>", "<tt>$path</tt>") :
 		&text('backup_nicedb', "<tt>$host</tt>");
 	}
+elsif ($proto == 9) {
+	$rv = &text('backup_nicewebmin', "<tt>$path</tt>", "<tt>$host</tt>");
+	}
 else {
 	$rv = $url;
 	}
-if ($caps && !$current_lang_info->{'charset'} && $rv ne $url) {
+if ($caps && (!$current_lang_info->{'charset'} || $current_lang =~ /^en/) &&
+    $rv ne $url) {
 	# Make first letter upper case
 	$rv = ucfirst($rv);
 	}
@@ -3633,7 +3896,32 @@ sub nice_backup_doms
 {
 local ($s) = @_;
 if ($s->{'all'} == 1) {
-	return "<i>$text{'sched_all'}</i>";
+	if ($s->{'plan'}) {
+		# All on some plans
+		my @plans = split(/\s+/, $s->{'plan'});
+		if (@plans == 1) {
+			my $plan = &get_plan($plans[0]);
+			return &text('sched_allplan',
+			    "<i>".($plan ? $plan->{'name'} : $plans[0])."</i>");
+			}
+		else {
+			return &text('sched_allplans', scalar(@plans));
+			}
+		}
+	elsif ($s->{'reseller'}) {
+		# All owned by some resellers
+		my @resellers = split(/\s+/, $s->{'reseller'});
+		if (@resellers == 1) {
+			return &text('sched_allreseller',
+			    "<i>".$resellers[0]."</i>");
+			}
+		else {
+			return &text('sched_allresellers', scalar(@resellers));
+			}
+		}
+	else {
+		return "<i>$text{'sched_all'}</i>";
+		}
 	}
 elsif ($s->{'doms'}) {
 	local @dnames;
@@ -3654,19 +3942,26 @@ else {
 }
 
 # show_backup_destination(name, value, no-local, [&domain], [no-download],
-#			  [no-upload])
+#			  [no-upload], [show-remove-option])
 # Returns HTML for fields for selecting a local or FTP file
 sub show_backup_destination
 {
-local ($name, $value, $nolocal, $d, $nodownload, $noupload) = @_;
+local ($name, $value, $nolocal, $d, $nodownload, $noupload, $remove) = @_;
 local ($mode, $user, $pass, $server, $path, $port) = &parse_backup_url($value);
 $mode = 1 if (!$value && $nolocal);	# Default to FTP
-local $defport = $mode == 1 ? 21 : $mode == 2 ? 22 : undef;
+local $defport = $mode == 1 ? 21 :
+		 $mode == 2 ? 22 :
+		 $mode == 9 ? 10000 : undef;
 $server = "[$server]" if (&check_ip6address($server));
 local $serverport = $port && $port != $defport ? "$server:$port" : $server;
 local $rv;
 
 local @opts;
+if ($remove) {
+	# Remove this destination
+	push(@opts, [ -1, $text{'backup_moderemove'} ]);
+	}
+
 if ($d && $d->{'dir'}) {
 	# Limit local file to under virtualmin-backups
 	local $bdir = "$d->{'home'}/$home_virtualmin_backup";
@@ -3722,6 +4017,25 @@ $st .= "<tr> <td>$text{'backup_pass'}</td> <td>".
        "</td> </tr>\n";
 $st .= "</table>\n";
 push(@opts, [ 2, $text{'backup_mode2'}, $st ]);
+
+# Webmin RPC fields
+local $wt = "<table>\n";
+$wt .= "<tr> <td>$text{'backup_webminserver'}</td> <td>".
+       &ui_textbox($name."_wserver", $mode == 9 ? $serverport : undef, 20).
+       "</td> </tr>\n";
+$wt .= "<tr> <td>$text{'backup_path'}</td> <td>".
+       &ui_textbox($name."_wpath", $mode == 9 ? $path : undef, 50).
+       "</td> </tr>\n";
+$wt .= "<tr> <td>$text{'backup_login'}</td> <td>".
+       &ui_textbox($name."_wuser", $mode == 9 ? $user : undef, 15,
+		   0, undef, $noac).
+       "</td> </tr>\n";
+$wt .= "<tr> <td>$text{'backup_pass'}</td> <td>".
+       &ui_password($name."_wpass", $mode == 9 ? $pass : undef, 15,
+		   0, undef, $noac).
+       "</td> </tr>\n";
+$wt .= "</table>\n";
+push(@opts, [ 9, $text{'backup_mode9'}, $wt ]);
 
 # S3 backup fields (bucket, access key ID, secret key and file)
 local $s3user = $mode == 3 ? $user : undef;
@@ -3805,7 +4119,7 @@ if (!$noupload) {
 		      &ui_upload($name."_upload", 40) ]);
 	}
 
-return &ui_radio_selector(\@opts, $name."_mode", $mode);
+return &ui_radio_selector(\@opts, $name."_mode", $mode, 1);
 }
 
 # parse_backup_destination(name, &in, no-local, [&domain], format)
@@ -3815,6 +4129,10 @@ sub parse_backup_destination
 local ($name, $in, $nolocal, $d, $fmt) = @_;
 local %in = %$in;
 local $mode = $in{$name."_mode"};
+if ($mode == -1) {
+	# Removing this one
+	return undef;
+	}
 if ($mode == 0 && defined($fmt) && $fmt == 0) {
 	# For a single-file backup, make sure the filename makes sense
 	$in{$name."_file"} =~ /\.(gz|zip|tar|bz2|Z)$/i ||
@@ -3931,6 +4249,31 @@ elsif ($mode == 8 && &can_use_cloud("dropbox")) {
 	($in{$name.'_dbpath'} =~ /^\// || $in{$name.'_dbpath'} =~ /\/$/) &&
 		&error($text{'backup_edbpath2'});
 	return "dropbox://".$in{$name.'_dbpath'};
+	}
+elsif ($mode == 9) {
+	# Webmin server
+	local ($server, $port);
+	if ($in{$name."_wserver"} =~ /^\[([^\]]+)\](:(\d+))?$/) {
+		($server, $port) = ($1, $3);
+		}
+	elsif ($in{$name."_wserver"} =~ /^([A-Za-z0-9\.\-\_]+)(:(\d+))?$/) {
+		($server, $port) = ($1, $3);
+		}
+	else {
+		&error($text{'backup_eserver9'});
+		}
+	&to_ipaddress($server) ||
+	    defined(&to_ip6address) && &to_ip6address($server) ||
+		&error($text{'backup_eserver9a'});
+	$port =~ /^\d*$/ || &error($text{'backup_eport'});
+	$in{$name."_wpath"} =~ /\S/ || &error($text{'backup_epath'});
+	$in{$name."_wuser"} =~ /^[^:\/ ]*$/ || &error($text{'backup_euser2'});
+	if ($in{$name."_wpath"} ne "/") {
+		# Strip trailing /
+		$in{$name."_spath"} =~ s/\/+$//;
+		}
+	return "webmin://".$in{$name."_wuser"}.":".$in{$name."_wpass"}."\@".
+	       $in{$name."_wserver"}.":".$in{$name."_wpath"};
 	}
 else {
 	&error($text{'backup_emode'});
@@ -4105,11 +4448,35 @@ if (!$config{'pbzip2'}) {
 	return &has_command('bunzip2') || 'bunzip2';
 	}
 elsif (&has_command('pbunzip2')) {
-	return &has_command('pbunzip2') || 'pbunzip2';
+	return &has_command('pbunzip2');
 	}
 else {
 	# Fall back to using -d option
 	return (&has_command('pbzip2') || 'pbzip2').' -d';
+	}
+}
+
+# get_gzip_command()
+# Returns the full path to the gzip-compatible command
+sub get_gzip_command
+{
+local $cmd = $config{'pigz'} ? 'pigz' : 'gzip';
+return &has_command($cmd) || $cmd;
+}
+
+# get_gunzip_command()
+# Returns the full path to the gunzip-compatible command
+sub get_gunzip_command
+{
+if (!$config{'pigz'}) {
+	return &has_command('gunzip') || 'gunzip';
+	}
+elsif (&has_command('unpigz')) {
+	return &has_command('unpigz');
+	}
+else {
+	# Fall back to using -d option
+	return (&has_command('pigz') || 'pigz').' -d';
 	}
 }
 
@@ -4251,18 +4618,36 @@ else {
 
 # can_backup_log([&log])
 # Returns 1 if the current user can view backup logs, and if given a specific
-# log entry
+# log entry returns 1 if the user can view that log (or 2 if they can but it
+# was created by root)
 sub can_backup_log
 {
 local ($log) = @_;
 return 1 if (&master_admin());
-return 0 if (!&can_backup_domain());
 if ($log) {
 	# Only allow non-admins to view their own logs
 	local @dnames = &backup_log_own_domains($log);
-	return @dnames ? 1 : 0;
+	if (!@dnames) {
+		# None of this user's domains are in the backup
+		return 0;
+		}
+	elsif (&master_admin() || $log->{'user'} eq $base_remote_user) {
+		# Backup was created by this user, or user is root
+		return 1;
+		}
+	elsif ($log->{'ownrestore'}) {
+		# Backup was created by root, but includes this user's domains
+		return 2;
+		}
+	return 0;
 	}
-return 1;
+else {
+	# Do any schedules that allow restore by the domain owner exist?
+	foreach my $s (&list_scheduled_backups()) {
+		return 1 if ($s->{'ownrestore'});
+		}
+	}
+return &can_backup_domain() ? 1 : 0;
 }
 
 # can_backup_keys()
@@ -4285,7 +4670,7 @@ sub backup_log_own_domains
 local ($log, $errormode) = @_;
 local @dnames = split(/\s+/, $errormode ? $log->{'errdoms'} : $log->{'doms'});
 return @dnames if (&master_admin() || $log->{'user'} eq $remote_user);
-if ($config{'own_restore'}) {
+if ($log->{'ownrestore'}) {
 	local @rv;
 	foreach my $d (&get_domains_by_names(@dnames)) {
 		push(@rv, $d->{'dom'}) if (&can_edit_domain($d));
@@ -4303,16 +4688,16 @@ sub extract_purge_path
 {
 local ($dest) = @_;
 local ($mode, undef, undef, $host, $path) = &parse_backup_url($dest);
-if (($mode == 0 || $mode == 1 || $mode == 2) &&
+if (($mode == 0 || $mode == 1 || $mode == 2 || $mode == 9) &&
     $path =~ /^(\S+)\/([^%]*%.*)$/) {
-	# Local, FTP or SSH file like /backup/%d-%m-%Y
+	# Local, FTP, SSH or Webmin file like /backup/%d-%m-%Y
 	local ($base, $date) = ($1, $2);
 	$date =~ s/%[_\-0\^\#]*\d*[A-Za-z]/\.\*/g;
 	return ($base, $date);
 	}
-elsif (($mode == 1 || $mode == 2) &&
+elsif (($mode == 1 || $mode == 2 || $mode == 9) &&
        $path =~ /^([^%\/]+%.*)$/) {
-	# FTP or SSH file like backup-%d-%m-%Y
+	# FTP, SSH or Webmin file like backup-%d-%m-%Y
 	local ($base, $date) = ("", $1);
 	$date =~ s/%[_\-0\^\#]*\d*[A-Za-z]/\.\*/g;
 	return ($base, $date);
@@ -4480,6 +4865,62 @@ elsif ($mode == 2) {
 				$pcount++;
 				}
 			}
+		}
+	}
+
+elsif ($mode == 9) {
+	# Use stat via Webmin RPC to list directory
+	local $err;
+	local $w = &dest_to_webmin($dest);
+	local $files;
+	eval {
+		local $main::error_must_die = 1;
+		&remote_foreign_require($w, "webmin");
+		$files = &remote_eval($w, "webmin",
+			'$base = "'.quotemeta($base).'"; '.
+			'opendir(DIR, $base); '.
+			'@f = readdir(DIR); '.
+			'closedir(DIR); '.
+			'[ map { [ $_, stat("$base/$_") ] } @f ]');
+		};
+	my $err = $@;
+	if ($err) {
+		$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+		&$second_print(&text('backup_purgeewebminls', $err));
+		return 0;
+		}
+	foreach my $f (@$files) {
+		my ($fn, @st) = @$f;
+		if ($fn =~ /^$re$/ &&
+		    $fn !~ /\.(dom|info)$/ &&
+		    $fn ne "." && $fn ne "..") {
+			$mcount++;
+			next if (!$st[9] || $st[9] >= $cutoff);
+			local $old = int((time() - $st[9]) / (24*60*60));
+			&$first_print(&text('backup_deletingwebmin',
+					    "<tt>$base/$fn</tt>", $old));
+			eval {
+				local $main::error_must_die = 1;
+				&remote_foreign_call($w, "webmin",
+					"unlink_file", "$base/$fn");
+				&remote_foreign_call($w, "webmin",
+					"unlink_file", "$base/$fn.info");
+				&remote_foreign_call($w, "webmin",
+					"unlink_file", "$base/$fn.dom");
+				};
+			my $err = $@;
+			if ($err) {
+				$err =~ s/\s+at\s+\S+\s+line\s+\d+.*//g;
+				&$second_print(&text('backup_edelwebmin',$err));
+				$ok = 0;
+				}
+			else {
+				&$second_print(&text('backup_deleted',
+						     &nice_size($st[7])));
+				$pcount++;
+				}
+			}
+
 		}
 	}
 
@@ -4744,14 +5185,16 @@ elsif ($mode == 8) {
 			my $size = $st->{'.tag'} eq 'folder' ?
 					&size_dropbox_directory($p) :
 					$st->{'size'};
-			local $err = &delete_dropbox_path($base, $f);
+			local $dropbase = $base;
+			$dropbase =~ s/^\///;
+			local $err = &delete_dropbox_path($dropbase, $f);
 			if ($err) {
 				&$second_print(&text('backup_edelbucket',$err));
 				$ok = 0;
 				}
 			else {
-				&delete_dropbox_path($base, $f.".dom");
-				&delete_dropbox_path($base, $f.".info");
+				&delete_dropbox_path($dropbase, $f.".dom");
+				&delete_dropbox_path($dropbase, $f.".info");
 				&$second_print(&text('backup_deleted',
 				     &nice_size($size)));
 				$pcount++;
@@ -4770,12 +5213,12 @@ return $ok;
 
 # write_backup_log(&domains, dest, incremental?, start, size, ok?,
 # 		   "cgi"|"sched"|"api", output, &errordoms, [user], [&key],
-# 		   [schedule-id], [separate-format])
+# 		   [schedule-id], [separate-format], [allow-owner-restore])
 # Record that some backup was made and succeeded or failed
 sub write_backup_log
 {
 local ($doms, $dest, $increment, $start, $size, $ok, $mode,
-       $output, $errdoms, $user, $key, $schedid, $separate) = @_;
+       $output, $errdoms, $user, $key, $schedid, $separate, $ownrestore) = @_;
 if (!-d $backups_log_dir) {
 	&make_dir($backups_log_dir, 0700);
 	}
@@ -4793,6 +5236,7 @@ local %log = ( 'doms' => join(' ', map { $_->{'dom'} } @$doms),
 	       'sched' => $schedid,
 	       'compression' => $config{'compression'},
 	       'separate' => $separate,
+	       'ownrestore' => $ownrestore,
 	     );
 $main::backup_log_id_count++;
 $log{'id'} = $log{'end'}."-".$$."-".$main::backup_log_id_count;
@@ -5140,9 +5584,25 @@ sub kill_running_backup
 {
 my ($sched) = @_;
 $sched->{'pid'} || &error("Backup has no PID!");
-&kill_logged(9, $sched->{'pid'});
+foreach my $pid (&find_backup_subprocesses($sched->{'pid'})) {
+	&kill_logged(9, $pid);
+	}
 my $file = $backups_running_dir."/".$sched->{'id'}."-".$sched->{'pid'};
 unlink($file);
+}
+
+# find_backup_subprocesses(pid, [&procs])
+# Returns a list of all subprocesses of the given PID
+sub find_backup_subprocesses
+{
+my ($pid, $procs) = @_;
+&foreign_require("proc");
+$procs ||= [ &proc::list_processes() ];
+my @rv = ( $pid );
+foreach my $sp (map { $_->{'pid'} } grep { $_->{'ppid'} == $pid } @$procs) {
+	push(@rv, &find_backup_subprocesses($sp, $procs));
+	}
+return @rv;
 }
 
 # delete_backup_from_log(&log)
@@ -5236,6 +5696,58 @@ my ($c) = @_;
 return $c == 0 ? "tar.gz" :
        $c == 1 ? "tar.bz2" :
        $c == 3 ? "zip" : "tar";
+}
+
+# set_backup_envs(&backup, &doms)
+# Set environment variables from a backup object
+sub set_backup_envs
+{
+my ($sched, $doms) = @_;
+foreach my $k (keys %$sched) {
+	$ENV{'BACKUP_'.uc($k)} = $sched->{$k};
+	}
+$ENV{'BACKUP_DOMAIN_NAMES'} = join(" ", map { $_->{'dom'} } @$doms);
+}
+
+# reset_backup_envs()
+# Clear variables set by set_backup_envs
+sub reset_backup_envs
+{
+foreach my $e (keys %ENV) {
+	delete($ENV{$e}) if ($e =~ /^(BACKUP_)/);
+	}
+}
+
+# dest_to_webmin(&dest-string)
+# Converts a backup destination string into a Webmin server object
+sub dest_to_webmin
+{
+my ($dest) = @_;
+my ($mode, $user, $pass, $server, $path, $port) = &parse_backup_url($dest);
+
+# Clear any previous handler that would prefer error from calling die
+&remote_error_setup(undef);
+
+# Find existing registered server, if any
+&foreign_require("servers");
+my @servers = &servers::list_servers();
+my ($already) = grep { $_->{'host'} eq $server &&
+		       $_->{'port'} == $port } @servers;
+if (!$already) {
+	($already) = grep { $_->{'host'} eq $server &&
+			    $_->{'port'} == $port } @servers;
+	}
+
+# Construct a server object using provided and stored info
+$user ||= $already->{'user'} if ($already);
+$pass ||= $already->{'pass'} if ($already);
+$port ||= $already->{'port'} if ($already);
+return { 'host' => $server,
+	 'port' => $port || 10000,
+	 'ssl' => $already ? $already->{'ssl'} : 1,
+	 'fast' => $already ? $already->{'fast'} : 1,
+	 'user' => $user,
+	 'pass' => $pass };
 }
 
 1;

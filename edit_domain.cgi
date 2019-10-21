@@ -45,7 +45,7 @@ $dname = &show_domain_name($d);
 $url = &get_domain_url($d)."/";
 print &ui_table_row($text{'edit_domain'},
 	&domain_has_website($d) ?
-	  "<tt><a target=_blank href=$url>$dname</a></tt>" :
+	  "<tt>".&ui_link($url, $dname, undef, "target=_blank")."</tt>" :
 	  "<tt>$dname</tt>");
 
 if ($dname ne $d->{'dom'}) {
@@ -169,6 +169,7 @@ if (@cantmpls) {
 $js = "<script>\n";
 $js .= "function select_plan(num)\n";
 $js .= "{\n";
+$js .= "var domain_form_target = document.querySelectorAll('form[action*=\"domain\"][action*=\".cgi\"]');\n";
 foreach $plan (@plans) {
 	$js .= "if (num == $plan->{'id'}) {\n";
 	$js .= &quota_javascript("quota", $plan->{'quota'}, "home", 1);
@@ -221,6 +222,17 @@ if (!$parentdom) {
 				$text{'edit_set'}, undef, undef, undef,
 			 	"autocomplete=off").
 		$smsg);
+	}
+
+# Show domain for use in links
+my @aliases = grep { &domain_has_website($_) }
+		   &get_domain_by("alias", $d->{'id'});
+if (!$d->{'alias'} && @aliases && &domain_has_website($d)) {
+	print &ui_table_row(&hlink($text{'edit_linkdom'}, "linkdom"),
+		&ui_select("linkdom", $d->{'linkdom'},
+			   [ [ undef, "&lt;$text{'edit_nolinkdom'}&gt;" ],
+			     map { [ $_->{'id'}, &show_domain_name($_) ] }
+				 @aliases ]));
 	}
 
 print &ui_hidden_table_end("config");
@@ -374,8 +386,7 @@ print &ui_form_end([ [ "save", $text{'edit_save'} ] ]);
 
 # Show actions for this domain, unless the theme vetos it (cause they are on
 # the left menu)
-if ($current_theme ne "virtual-server-theme" &&
-    !$main::basic_virtualmin_domain &&
+if (!$main::basic_virtualmin_domain &&
     !$main::basic_virtualmin_menu) {
 	&show_domain_buttons($d);
 	}
@@ -386,4 +397,3 @@ if (defined(&theme_select_domain)) {
 	}
 
 &ui_print_footer("", $text{'index_return'});
-

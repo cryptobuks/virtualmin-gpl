@@ -105,6 +105,19 @@ if (&can_edit_plans()) {
 			   5, 1));
 	}
 
+# Limit to resellers
+if (&can_edit_resellers() && defined(&list_resellers) &&
+    (@resellers = &list_resellers())) {
+	@resellers = sort { lc($a->{'name'}) cmp lc($b->{'name'}) } @resellers;
+	print &ui_table_row(&hlink($text{'backup_reseller'}, "backup_reseller"),
+		&ui_radio("reseller_def", $sched->{'reseller'} ? 0 : 1,
+			  [ [ 1, $text{'backup_anyreseller'} ],
+			    [ 0, $text{'backup_selreseller'} ] ])."<br>\n".
+		&ui_select("reseller", [ split(/\s+/, $sched->{'reseller'}) ],
+			   [ map { $_->{'name'} } @resellers ],
+			   3, 1));
+	}
+
 print &ui_hidden_table_end("doms");
 
 # Show feature and plugin selection boxes
@@ -184,7 +197,8 @@ my $i = 0;
 foreach $dest (@dests) {
 	# Show destination fields
 	$dfield = &show_backup_destination("dest".$i, $dest, $cbmode == 3,
-					   $d, $nodownload, 1);
+					   $d, $nodownload, 1,
+					   $i > 0 && $dest);
 
 	# Add purging option
 	@grid = ( );
@@ -213,7 +227,7 @@ foreach $dest (@dests) {
 
 # Show destination fields
 print &ui_hidden_table_start($text{'backup_headerdest'}, "width=100%", 2,
-			     "dest", 1, \@tds);
+			     "dest", 0, \@tds);
 print &ui_table_row(&hlink($text{'backup_dest'}, "backup_dest"),
 	    join("<hr>\n", @dfields));
 
@@ -239,7 +253,8 @@ if (@allkeys) {
 print &ui_table_row(&hlink($text{'backup_fmt'}, "backup_fmt"),
 	&ui_radio("fmt", int($sched->{'fmt'}),
 		  [ [ 0, $text{'backup_fmt0'} ],
-		    [ 1, $text{'backup_fmt1'} ],
+		    $sched->{'fmt'} == 1 ?
+			( [ 1, $text{'backup_fmt1'} ] ) : ( ),
 		    [ 2, $text{'backup_fmt2'} ] ])."<br>".
 	&ui_checkbox("mkdir", 1, $text{'backup_mkdir'},
 		     int($sched->{'mkdir'})));
@@ -305,6 +320,13 @@ if ($in{'sched'} || $in{'new'}) {
 		&ui_radio("kill", $sched->{'kill'} ? 1 : 0,
 			  [ [ 0, $text{'backup_kill0'} ],
 			    [ 1, $text{'backup_kill1'} ] ]));
+
+	# Can be restored by domain owners?
+	if (&master_admin()) {
+		print &ui_table_row(
+			&hlink($text{'backup_ownrestore'}, "backup_ownrestore"),
+			&ui_yesno_radio("ownrestore", $sched->{'ownrestore'}));
+		}
 
 	# Enabled/disabled input
 	print &ui_table_row(&hlink($text{'backup_when'}, "backup_when"),

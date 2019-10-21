@@ -1,5 +1,10 @@
 # Functions for copying SSL certs to other servers
 
+sub list_service_ssl_cert_types
+{
+return ('webmin', 'usermin', 'dovecot', 'postfix', 'proftpd');
+}
+
 # get_all_service_ssl_certs(&domain, include-per-ip-certs)
 # Returns a list of all SSL certs used by global services like Postfix
 sub get_all_service_ssl_certs
@@ -11,6 +16,7 @@ my @svcs;
 my %miniserv;
 &get_miniserv_config(\%miniserv);
 if ($miniserv{'ssl'}) {
+	# Check Webmin certificate
 	if ($perip) {
 		# Check for per-IP or per-domain cert first
 		my @ipkeys = &webmin::get_ipkeys(\%miniserv);
@@ -38,6 +44,7 @@ if ($miniserv{'ssl'}) {
 	}
 
 if (&foreign_installed("usermin")) {
+	# Check Usermin certificate
 	&foreign_require("usermin");
 	my %uminiserv;
 	&usermin::get_usermin_miniserv_config(\%uminiserv);
@@ -69,11 +76,13 @@ if (&foreign_installed("usermin")) {
 			      'port' => $uminiserv{'port'} });
 		}
 	}
+
 if (&foreign_installed("dovecot")) {
-	my ($cfile, $kfile, $ip, $dom);
+	# Check Dovecot certificate
+	my ($cfile, $kfile, $cafile, $ip, $dom);
 	if ($perip) {
 		# Try per-IP cert first
-		($cfile, $kfile, undef, $ip, $dom) = &get_dovecot_ssl_cert($d);
+		($cfile, $kfile, $cafile, $ip,$dom) = &get_dovecot_ssl_cert($d);
 		}
 	if (!$cfile) {
 		# Fall back to global Dovecot cert
@@ -82,18 +91,22 @@ if (&foreign_installed("dovecot")) {
 		$cfile = &dovecot::find_value("ssl_cert_file", $conf) ||
 			 &dovecot::find_value("ssl_cert", $conf, 0, "");
 		$cfile =~ s/^<//;
+		$cafile = &dovecot::find_value("ssl_ca", $conf);
+		$cafile =~ s/^<//;
 		}
 	if ($cfile) {
 		push(@svcs, { 'id' => 'dovecot',
 			      'cert' => $cfile,
-			      'ca' => 'none',
+			      'ca' => $cafile,
 			      'prefix' => 'mail',
 			      'port' => 993,
 			      'ip' => $ip,
 			      'dom' => $dom, });
 		}
 	}
+
 if ($config{'mail_system'} == 0) {
+	# Check Postfix certificate
 	my ($cfile, $kfile, $cafile, $ip);
 	if ($perip) {
 		# Try per-IP cert first
@@ -113,7 +126,9 @@ if ($config{'mail_system'} == 0) {
 			      'ip' => $ip, });
 		}
 	}
+
 if ($config{'ftp'}) {
+	# Check ProFTPd certificate
 	&foreign_require("proftpd");
 	my $conf = &proftpd::get_config();
 	my $cfile = &proftpd::find_directive(
@@ -175,21 +190,25 @@ my ($d) = @_;
 &foreign_require("dovecot");
 my $configfile = &dovecot::get_config_file();
 &lock_file($configfile);
-my $dovedir = $cfile;
+my $dovedir = $configfile;
 $dovedir =~ s/\/([^\/]+)$//;
 my $conf = &dovecot::get_config();
+my $v2 = &dovecot::find_value("ssl_cert", $conf, 2);
 my $cfile = &dovecot::find_value("ssl_cert_file", $conf) ||
 	 &dovecot::find_value("ssl_cert", $conf, 0, "");
 my $kfile = &dovecot::find_value("ssl_key_file", $conf) ||
 	 &dovecot::find_value("ssl_key", $conf, 0, "");
+my $cafile = &dovecot::find_value("ssl_ca", $conf);
 $cfile =~ s/^<//;
 $kfile =~ s/^<//;
+$cafile =~ s/^<//;
 if ($cfile =~ /snakeoil/) {
 	# Hack to not use shared cert file on Ubuntu / Debian
 	$cfile = $kfile = $cafile = undef;
 	}
 $cfile ||= "$dovedir/dovecot.cert.pem";
 $kfile ||= "$dovedir/dovecot.key.pem";
+$cafile ||= "$dovedir/dovecot.key.ca";
 
 # Copy cert into those files
 &$first_print($text{'copycert_dsaving'});
@@ -201,7 +220,7 @@ $cdata || &error($text{'copycert_ecert'});
 $kdata || &error($text{'copycert_ekey'});
 &open_lock_tempfile(CERT, ">$cfile");
 &print_tempfile(CERT, $cdata,"\n");
-if ($cadata) {
+if ($cadata && !$v2) {
 	&print_tempfile(CERT, $cadata,"\n");
 	}
 &close_tempfile(CERT);
@@ -210,12 +229,19 @@ if ($cadata) {
 &print_tempfile(KEY, $kdata,"\n");
 &close_tempfile(KEY);
 &set_ownership_permissions(undef, undef, 0750, $kfile);
+if ($v2) {
+	&open_lock_tempfile(KEY, ">$cafile");
+	&print_tempfile(KEY, $cadata,"\n");
+	&close_tempfile(KEY);
+	&set_ownership_permissions(undef, undef, 0750, $cafile);
+	}
 
 # Update config with correct files
-if (&dovecot::find_value("ssl_cert", $conf, 2)) {
+if ($v2) {
 	# 2.0 and later format
 	&dovecot::save_directive($conf, "ssl_cert", "<".$cfile);
 	&dovecot::save_directive($conf, "ssl_key", "<".$kfile);
+	&dovecot::save_directive($conf, "ssl_ca", "<".$cafile);
 	}
 else {
 	# Pre-2.0 format
@@ -247,8 +273,7 @@ if (&dovecot::get_dovecot_version() < 2) {
 &foreign_require("webmin");
 if (!&dovecot::find_value("ssl_cipher_list", $conf)) {
 	&dovecot::save_directive($conf, "ssl_cipher_list",
-				 $webmin::strong_ssl_ciphers ||
-				   "HIGH:MEDIUM:+TLSv1:!SSLv2:+SSLv3");
+				 $webmin::strong_ssl_ciphers);
 	}
 
 &flush_file_lines();
@@ -333,7 +358,7 @@ if (&compare_version_numbers($postfix::postfix_version, "2.3") >= 0) {
 else {
 	&postfix::set_current_value("smtpd_use_tls", "yes");
 	}
-&postfix::set_current_value("smtpd_tls_mandatory_protocols", "!SSLv2, !SSLv3");
+&postfix::set_current_value("smtpd_tls_mandatory_protocols", "!SSLv2, !SSLv3, !TLSv1, !TLSv1.1");
 &lock_file($postfix::config{'postfix_master'});
 my $master = &postfix::get_master_config();
 my ($smtps) = grep { $_->{'name'} eq 'smtps' } @$master;

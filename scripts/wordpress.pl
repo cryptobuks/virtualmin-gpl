@@ -20,7 +20,7 @@ return "A semantic personal publishing platform with a focus on aesthetics, web 
 # script_wordpress_versions()
 sub script_wordpress_versions
 {
-return ( "4.9" );
+return ( "5.2.3" );
 }
 
 sub script_wordpress_category
@@ -30,13 +30,7 @@ return ("Blog", "CMS");
 
 sub script_wordpress_php_vers
 {
-my ($d, $ver) = @_;
-if ($ver >= 3.2) {
-	return ( 5 );
-	}
-else {
-	return ( 4, 5 );
-	}
+return ( 5 );
 }
 
 sub script_wordpress_php_modules
@@ -56,7 +50,7 @@ return ("mysql");
 
 sub script_wordpress_release
 {
-return 4;	# For wp-cli support
+return 5;	# Fix format of wp-config.php
 }
 
 # script_wordpress_depends(&domain, version)
@@ -65,19 +59,13 @@ sub script_wordpress_depends
 my ($d, $ver, $sinfo, $phpver) = @_;
 my @rv;
 
-# Check for MySQL 4+
-require_mysql();
-if (mysql::get_mysql_version() < 4) {
-	push(@rv, "WordPress requires MySQL version 4 or higher");
-	}
-
-# Check for PHP 5.2+
+# Check for PHP 5.6.20+
 my $phpv = get_php_version($phpver || 5, $d);
 if (!$phpv) {
 	push(@rv, "Could not work out exact PHP version");
 	}
-elsif ($phpv < 5.2) {
-	push(@rv, "Wordpress requires PHP version 5.2 or later");
+elsif (&compare_versions($phpv, "5.6.20") < 0) {
+	push(@rv, "Wordpress requires PHP version 5.6.20 or later");
 	}
 
 return @rv;
@@ -159,7 +147,7 @@ return undef;
 sub script_wordpress_files
 {
 my ($d, $ver, $opts, $upgrade) = @_;
-if ($d && &has_wordpress_cli()) {
+if ($d && &has_wordpress_cli($opts) && !$opts->{'nocli'}) {
 	# Nothing to download
 	return ( );
 	}
@@ -195,13 +183,14 @@ my $dbhost = get_database_host($dbtype, $d);
 my $dberr = check_script_db_connection($dbtype, $dbname, $dbuser, $dbpass);
 return (0, "Database connection failed : $dberr") if ($dberr);
 
-if (&has_wordpress_cli()) {
+if (&has_wordpress_cli($opts) && !$opts->{'nocli'}) {
+	my $wp = "cd ".quotemeta($opts->{'dir'}).
+	         " && ".&has_wordpress_cli($opts);
 	if (!$upgrade) {
 		# Execute the download command
 		&make_dir_as_domain_user($d, $opts->{'dir'}, 0755);
-		my $wp = "cd ".quotemeta($opts->{'dir'})." && ".&has_command("wp");
 		my $out = &run_as_domain_user($d, "$wp core download --version=$version 2>&1");
-		if ($?) {
+		if ($? && $out !~ /Success:\s+WordPress\s+downloaded/i) {
 			return (-1, "wp core download failed : $out");
 			}
 
@@ -228,7 +217,7 @@ if (&has_wordpress_cli()) {
 	else {
 		# Do the upgrade
 		my $out = &run_as_domain_user($d,
-                        "$wp core upgrade --version=$version");
+                        "$wp core upgrade --version=$version 2>&1");
 		if ($?) {
 			return (-1, "wp core upgrade failed : $out");
 			}
@@ -261,24 +250,24 @@ else {
 					      quotemeta($cfile));
 		my $lref = read_file_lines_as_domain_user($d, $cfile);
 		foreach my $l (@$lref) {
-			if ($l =~ /^define\('DB_NAME',/) {
+			if ($l =~ /^define\(\s*'DB_NAME',/) {
 				$l = "define('DB_NAME', '$dbname');";
 				}
-			if ($l =~ /^define\('DB_USER',/) {
+			if ($l =~ /^define\(\s*'DB_USER',/) {
 				$l = "define('DB_USER', '$dbuser');";
 				}
-			if ($l =~ /^define\('DB_HOST',/) {
+			if ($l =~ /^define\(\s*'DB_HOST',/) {
 				$l = "define('DB_HOST', '$dbhost');";
 				}
-			if ($l =~ /^define\('DB_PASSWORD',/) {
+			if ($l =~ /^define\(\s*'DB_PASSWORD',/) {
 				$l = "define('DB_PASSWORD', '".
 				     php_quotemeta($dbpass, 1)."');";
 				}
-			if ($l =~ /define\('(AUTH_KEY|SECURE_AUTH_KEY|LOGGED_IN_KEY|NONCE_KEY|AUTH_SALT|SECURE_AUTH_SALT|LOGGED_IN_SALT|NONCE_SALT)'/) {
+			if ($l =~ /define\(\s*'(AUTH_KEY|SECURE_AUTH_KEY|LOGGED_IN_KEY|NONCE_KEY|AUTH_SALT|SECURE_AUTH_SALT|LOGGED_IN_SALT|NONCE_SALT)'/) {
 				my $salt = random_password(64);
 				$l = "define('$1', '$salt');";
 				}
-			if ($l =~ /^define\('WP_AUTO_UPDATE_CORE',/) {
+			if ($l =~ /^define\(\s*'WP_AUTO_UPDATE_CORE',/) {
 				$l = "define('WP_AUTO_UPDATE_CORE', false);";
 				}
 			}
@@ -289,7 +278,7 @@ else {
 # Make content directory writable, for uploads
 make_file_php_writable($d, "$opts->{'dir'}/wp-content", 0);
 
-if (&has_wordpress_cli()) {
+if (&has_wordpress_cli($opts) && !$opts->{'nocli'}) {
 	# Install is all done, return the base URL
 	my $url = script_path_url($d, $opts);
 	my $rp = $opts->{'dir'};
@@ -349,7 +338,7 @@ sub script_wordpress_latest
 {
 my ($ver) = @_;
 return ( "http://wordpress.org/download/",
-	 "Version\\s+([0-9\\.]+)" );
+	 "Download\\s+WordPress\\s+([0-9\\.]+)" );
 }
 
 sub script_wordpress_site
@@ -369,7 +358,13 @@ return &has_wordpress_cli() ? 1 : 0;
 
 sub has_wordpress_cli
 {
-return &has_command("wp");
+my ($opts) = @_;
+my $wp = &has_command("wp");
+return undef if (!$wp);
+return $wp if (!$opts || !defined(&get_php_cli_command));
+my $cli = &get_php_cli_command($opts->{'phpver'});
+return $wp if (!$cli);
+return $cli." ".$wp;
 }
 
 1;

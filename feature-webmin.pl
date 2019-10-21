@@ -797,7 +797,7 @@ if ($extramods{'syslog'} && $_[0]->{'webmin'}) {
 	local %done;
 	foreach my $sd (@doms) {
 		# Add Apache logs, for domains with websites and separate logs
-		if ($sd->{'web'} && !$sd->{'alias_mode'}) {
+		if (&domain_has_website($sd) && !$sd->{'alias_mode'}) {
 			local $alog = &get_website_log($sd, 0);
 			local $elog = &get_website_log($sd, 1);
 			push(@extras, $alog." ".&text('webmin_alog',
@@ -838,10 +838,10 @@ else {
 local @pconfs;
 if ($extramods{'phpini'}) {
 	# Can edit PHP configuration files
-	foreach my $sd (@doms) {
+	foreach my $sd (grep { $_->{'web'} } @doms) {
 		my $mode = &get_domain_php_mode($sd);
-		if ($sd->{'web'} &&
-		    $mode ne "mod_php" && $mode ne "fpm") {
+		if ($mode ne "mod_php" && $mode ne "fpm") {
+			# Allow access to .ini files
 			foreach my $ini (&list_domain_php_inis($sd)) {
 				local @st = stat($ini->[1]);
 				if (@st && $st[4] == $sd->{'uid'}) {
@@ -856,6 +856,16 @@ if ($extramods{'phpini'}) {
 						    $sd->{'dom'}));
 						}
 					}
+				}
+			}
+		elsif ($mode eq "fpm") {
+			# Allow access to FPM configs for PHP overrides
+			my $conf = &get_php_fpm_config();
+			if ($conf) {
+				my $file = $conf->{'dir'}."/".
+					   $sd->{'id'}.".conf";
+				push(@pconfs, $file."=".
+					&text('webmin_phpini', $sd->{'dom'}));
 				}
 			}
 		}
@@ -1306,6 +1316,12 @@ $tmpl->{'gacl_ugroups'} = $in{'gacl_ugroups'};
 $tmpl->{'gacl_groups'} = $in{'gacl_groups'};
 $tmpl->{'gacl_root'} = $in{'gacl_root'};
 $tmpl->{'extra_prefix'} = &parse_none_def("extra_prefix");
+if ($in{'webmin_group'} && $in{'webmin_group'} ne "none") {
+	local ($group) = grep { $_->{'name'} eq $in{'webmin_group'} }
+			      &acl::list_groups();
+	&indexof($module_name, @{$group->{'members'}}) < 0 ||
+		&error($text{'tmpl_ewgroup'});
+	}
 $tmpl->{'webmin_group'} = $in{'webmin_group'};
 }
 

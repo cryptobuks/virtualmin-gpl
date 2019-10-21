@@ -19,21 +19,7 @@ return "A browser-based MySQL database management interface.";
 # script_phpmyadmin_versions()
 sub script_phpmyadmin_versions
 {
-return ( "4.7.5", "4.4.15.10", "4.0.10.20", "3.5.8.2" );
-}
-
-sub script_phpmyadmin_can_upgrade
-{
-local ($sinfo, $newver) = @_;
-if (&compare_versions($newver, "4.2.3") >= 0) {
-	my $out;
-	&require_mysql();
-	my $myver = &mysql::get_mysql_version(\$out);
-	if ($myver && $myver < 5.5) {
-		return 0;
-		}
-	}
-return 1;
+return ( "4.9.1", "4.4.15.10", "4.0.10.20", "3.5.8.2" );
 }
 
 sub script_phpmyadmin_version_desc
@@ -47,7 +33,7 @@ return &compare_versions($ver, "4.5") >= 0 ? "$ver (Latest)" :
 
 sub script_phpmyadmin_release
 {
-return 8;		# To add intermediate version 4.4.15.10
+return 10;		# To fix MySQL version check
 }
 
 sub script_phpmyadmin_category
@@ -57,8 +43,7 @@ return "Database";
 
 sub script_phpmyadmin_php_vers
 {
-local ($d, $ver) = @_;
-return $ver >= 3.1 ? ( 5 ) : ( 5, 4 );
+return ( 5 );
 }
 
 sub script_phpmyadmin_php_modules
@@ -68,7 +53,11 @@ return ("mysql");
 
 sub script_phpmyadmin_php_optional_modules
 {
-return ("mcrypt");
+my ($d, $ver, $phpver, $opts) = @_;
+if (&compare_versions($phpver, "7.1") < 0) {
+	return ("mcrypt");
+	}
+return ();
 }
 
 # Must have at least one existing DB, and PHP 5.2
@@ -95,10 +84,9 @@ if ($wantver) {
 	}
 
 # Check for latest MySQL
-if (&compare_versions($ver, "4.2.3") >= 0) {
-	&require_mysql();
-	my $out;
-	my $myver = &mysql::get_mysql_version(\$out);
+if (&compare_versions($ver, "4.2.3") >= 0 &&
+    defined(&get_dom_remote_mysql_version)) {
+	my ($myver, $variant) = &get_dom_remote_mysql_version($d);
 	if ($myver && $myver < 5.5) {
 		push(@rv, "phpMyAdmin requires MySQL version 5.5 or later");
 		}

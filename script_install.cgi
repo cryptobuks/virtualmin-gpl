@@ -11,6 +11,7 @@ $ENV{'HTTP_REFERER'} = "list_scripts.cgi?dom=$in{'dom'}";
 $sname = $in{'script'};
 $ver = $in{'version'};
 $script = &get_script($sname);
+$script || &error($text{'scripts_emissing'});
 @got = &list_domain_scripts($d);
 if ($in{'upgrade'}) {
 	($sinfo) = grep { $_->{'id'} eq $in{'upgrade'} } @got;
@@ -55,9 +56,13 @@ if ($opts && !ref($opts)) {
 	}
 
 # Check for a clash, unless upgrading
-if (!$sinfo) {
+if (!$sinfo && !$script->{'overlap'}) {
 	($clash) = grep { $_->{'opts'}->{'path'} eq $opts->{'path'} } @got;
-	$clash && &error(&text('scripts_eclash', "<tt>$opts->{'dir'}</tt>"));
+	if ($clash) {
+		$clashscript = &get_script($clash->{'name'});
+                $clashscript->{'overlap'} ||
+		    &error(&text('scripts_eclash', "<tt>$opts->{'dir'}</tt>"));
+		}
 	}
 
 # Check options, unless upgrading

@@ -30,8 +30,8 @@ print &ui_hidden_table_start($text{'edit_header'}, "width=100%", 4,
 if (&domain_has_website($d)) {
 	$url = &get_domain_url($d)."/";
 	print &ui_table_row($text{'edit_domain'},
-			"<tt><a href=$url target=_blank>$d->{'dom'}</a></tt>",
-			undef, \@tds);
+	    "<tt>".&ui_link($url, $d->{'dom'}, undef, "target=_blank")."</tt>",
+	    undef, \@tds);
 	}
 else {
 	print &ui_table_row($text{'edit_domain'},
@@ -234,8 +234,7 @@ else {
 
 # Show actions for this domain, unless the theme vetos it (cause they are on
 # the left menu)
-if ($current_theme ne "virtual-server-theme" &&
-    !$main::basic_virtualmin_domain) {
+if (!$main::basic_virtualmin_domain) {
 	&show_domain_buttons($d);
 	}
 

@@ -263,6 +263,7 @@ if ($multi) {
 		local ($duser) = grep { $_->{'user'} eq $d->{'user'} } @users;
 		print "$d->{'dom'}\n";
 		print "    ID: $d->{'id'}\n";
+		print "    File: $d->{'file'}\n";
 		print "    Type: ",($d->{'alias'} && $d->{'aliasmail'} ?
 					"Alias with own email" :
 				    $d->{'alias'} ? "Alias" :
@@ -284,6 +285,11 @@ if ($multi) {
 		elsif ($d->{'parent'}) {
 			$parentdom = &get_domain_by("id", $d->{'parent'});
 			print "    Parent domain: $parentdom->{'dom'}\n";
+			}
+		if ($d->{'linkdom'}) {
+			$linkdom = &get_domain($d->{'linkdom'});
+			print "    Domain for links: $linkdom->{'dom'}\n"
+				if ($linkdom);
 			}
 		print "    Description: $d->{'owner'}\n";
 		print "    Template ID: $d->{'template'}\n";

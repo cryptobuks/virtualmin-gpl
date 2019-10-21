@@ -179,28 +179,36 @@ if (!&master_admin() && !&reseller_admin()) {
 		    'id' => 'domain',
 	 	    'desc' => $text{'right_header3'},
 		    'table' => \@table });
-	if ($data->{'nosysinfo'} || !&can_view_sysinfo()) {
+	if ($data->{'nosysinfo'}) {
 		push(@rv, { 'type' => 'veto',
 			    'veto' => 'sysinfo' });
 		}
+	}
+
+# If this user can't see system info, block it
+if (!&can_view_sysinfo()) {
+	push(@rv, { 'type' => 'veto',
+		    'veto' => 'sysinfo' });
 	}
 
 # Virtualmin package updates, filtered from the possible updates list
 my $hasvposs = foreign_check("package-updates");
 my $canvposs = foreign_available("package-updates");
 if (!$data->{'noupdates'} && $hasvposs && $canvposs && @vposs) {
-	my $html = &ui_form_start("/package-updates/update.cgi");
+	my $html = &ui_form_start("$gconfig{'webprefix'}/package-updates/update.cgi");
 	$html .= &ui_hidden("redirdesc", $text{'right_sysinfo'});
 	$html .= &text(@vposs > 1 ? 'right_upcount' : 'right_upcount1',
 		       scalar(@vposs),
-		       '/package-updates/index.cgi?mode=updates')."<p>\n";
+		       $gconfig{'webprefix'} . '/package-updates/index.cgi?mode=updates')."<p>\n";
 	$html .= &ui_columns_start([ $text{'right_upname'},
                                      $text{'right_updesc'},
                                      $text{'right_upver'} ], "80%");
 	foreach my $p (@vposs) {
 		$html .= &ui_columns_row([
-			$p->{'name'}, $p->{'desc'}, $p->{'version'} ]);
-		$html .= &ui_hidden("u", $p->{'update'}."/".$p->{'system'});
+			($p->{'name'} . &ui_hidden("u", $p->{'update'}."/".$p->{'system'})), 
+			 $p->{'desc'}, 
+			 $p->{'version'} ]
+			);
 		}
 	$html .= &ui_columns_end();
 	$html .= &ui_form_end([ [ undef, $text{'right_upok'} ] ]);
@@ -240,14 +248,14 @@ if (!$data->{'nostatus'} && $info->{'startstop'} &&
 		   "<img src='$idir/stop.png' alt='$status->{'desc'}' />" :
 		   "<img src='$idir/start.png' alt='$status->{'desc'}' />");
 		my $action_link = "<a href='/$module_name/$action?".
-		   "feature=$status->{'feature'}'".
+		   "feature=$status->{'feature'}&id=$status->{'id'}'".
 		   " title='$status->{'desc'}'>".
 		   "$action_icon</a>";
 
 		# Restart link 
 		my $restart_link = ($status->{'status'}
 		   ? "<a href='/$module_name/restart_feature.cgi?".
-		     "feature=$status->{'feature'}'".
+		     "feature=$status->{'feature'}&id=$status->{'id'}'".
 		     " title='$status->{'restartdesc'}'>".
 		     "<img src='$idir/reload.png'".
 		     "alt='$status->{'restartdesc'}'></a>\n"

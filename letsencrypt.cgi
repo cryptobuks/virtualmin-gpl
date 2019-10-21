@@ -18,12 +18,14 @@ else {
 		$dname = lc(&parse_domain_name($dname));
 		my $checkname = $dname;
 		$checkname =~ s/^www\.//;
+		$checkname =~ s/^\*\.//;
 		$err = &valid_domain_name($checkname);
 		&error($err) if ($err);
 		push(@dnames, $dname);
 		}
 	$custom_dname = join(" ", @dnames);
 	}
+@dnames || &error($text{'letsencrypt_ednames'});
 $in{'renew_def'} || $in{'renew'} =~ /^\d+(\.\d+)?$/ ||
 	&error($text{'letsencrypt_erenew'});
 
@@ -43,13 +45,15 @@ else {
 	&ui_print_unbuffered_header(&domain_in($d),
 				    $text{'letsencrypt_title'}, "");
 
+	# Build list of domains
+	my @cdoms = ( $d );
+	if (!$d->{'alias'} && $in{'dname_def'}) {
+		push(@cdoms, grep { &domain_has_website($_) }
+				  &get_domain_by("alias", $d->{'id'}));
+		}
+
 	# Validate connectivity
-	if ($in{'connectivity'}) {
-		my @cdoms = ( $d );
-		if (!$d->{'alias'} && $in{'dname_def'}) {
-			push(@cdoms, grep { &domain_has_website($_) }
-					  &get_domain_by("alias", $d->{'id'}));
-			}
+	if ($in{'connectivity'} == 2) {
 		&$first_print(&text('letsencrypt_conncheck',
 			join(" ", map { &show_domain_name($_) } @cdoms)));
 		my @errs;
@@ -72,6 +76,29 @@ else {
 		else {
 			&$second_print($text{'letsencrypt_connok'});
 			}
+		}
+
+	# Validate config
+	if ($in{'connectivity'} >= 1) {
+		&$first_print(&text('letsencrypt_validcheck',
+			join(" ", map { &show_domain_name($_) } @cdoms)));
+		my @errs = map { &validate_letsencrypt_config($_) } @cdoms;
+		if (@errs) {
+			&$second_print($text{'letsencrypt_connerrs'});
+			print "<ul>\n";
+			foreach my $e (@errs) {
+				print "<li>",$e->{'desc'}," : ",
+					     $e->{'error'},"\n";
+				}
+			print "</ul>\n";
+			&ui_print_footer(&domain_footer_link($d),
+					 "", $text{'index_return'});
+			return;
+			}
+		else {
+			&$second_print($text{'letsencrypt_connok'});
+			}
+
 		}
 
 	# Run the before command

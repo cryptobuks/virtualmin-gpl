@@ -31,7 +31,7 @@ if ($in{'bg'}) {
 		&$second_print($text{'backup_started2'});
 		}
 
-	&ui_print_footer("list_sched.cgi", $text{'sched_return'});
+	&ui_print_footer("/$module_name/list_sched.cgi", $text{'sched_return'});
 	exit;
 	}
 
@@ -74,9 +74,15 @@ else {
 # Limit to those on some plan, if given
 if ($in{'plan'} && !$in{'plan_def'} && &can_edit_plans()) {
 	%plandoms = map { $_->{'id'}, 1 }
-	  grep { &indexof($_->{'plan'}, split(/\s+/, $in{'plan'})) >= 0 } @doms;
+	  grep { &indexof($_->{'plan'}, split(/\0/, $in{'plan'})) >= 0 } @doms;
 	@doms = grep { $plandoms{$_->{'id'}} ||
 		       $plandoms{$_->{'parent'}} } @doms;
+	}
+
+# Limit to those owned by some resellers, if given
+if ($in{'reseller'} && !$in{'reseller_def'} && &can_edit_resellers()) {
+	%resels = map { $_, 1 } split(/\0/, $in{'reseller'});
+	@doms = grep { $_->{'reseller'} && $resels{$_->{'reseller'}} } @doms;
 	}
 
 # Work out the current user's main domain, if needed
@@ -196,7 +202,7 @@ if ($dests[0] eq "download:") {
 		print "\n";
 		open(TEMP, $temp);
 		unlink($temp);
-		while(read(TEMP, $buf, 1024) > 0) {
+		while(read(TEMP, $buf, 32768) > 0) {
 			print $buf;
 			}
 		close(TEMP);
@@ -213,8 +219,10 @@ else {
 	$start_time = time();
 	if ($in{'oneoff'} && $sched->{'before'}) {
 		&$first_print($text{'backup_brun'});
+		&set_backup_envs($sched, \@doms);
 		$out .= &backquote_logged(
 			"($sched->{'before'}) 2>&1 </dev/null");
+		&reset_backup_envs();
 		print "<pre>".&html_escape($out)."</pre>";
 		if ($?) {
 			&$second_print($text{'backup_brunfailed'});
@@ -274,8 +282,10 @@ else {
 	# Run any after command
 	if ($in{'oneoff'} && $sched->{'after'}) {
 		&$first_print($text{'backup_arun'});
+		&set_backup_envs($sched, \@doms);
 		$out = &backquote_command(
 			"($sched->{'after'}) 2>&1 </dev/null");
+		&reset_backup_envs();
 		print "<pre>".&html_escape($out)."</pre>";
 		if ($?) {
 			&$second_print($text{'backup_arunfailed'});

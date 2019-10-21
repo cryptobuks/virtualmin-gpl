@@ -1,3 +1,4 @@
+# XXX SSL cert linkage should be broken when an incompatible cert is installed
 
 sub init_ssl
 {
@@ -114,10 +115,10 @@ $d->{'letsencrypt_renew'} = 2;		# Default let's encrypt renewal
 
 # Find out if this domain will share a cert with another
 &find_matching_certificate($d);
-local $chained = $d->{'ssl_chain'};
 
 # Create a self-signed cert and key, if needed
 my $generated = &generate_default_certificate($d);
+local $chained = $d->{'ssl_chain'};
 
 # Add NameVirtualHost if needed, and if there is more than one SSL site on
 # this IP address
@@ -218,7 +219,7 @@ if ($config{'auto_redirect'}) {
 &release_lock_web($d);
 &$second_print($text{'setup_done'});
 if ($d->{'virt'}) {
-	&register_post_action(\&restart_apache, 1);
+	&register_post_action(\&restart_apache, &ssl_needs_apache_restart());
 	}
 else {
 	&register_post_action(\&restart_apache);
@@ -456,7 +457,7 @@ if ($d->{'dom'} ne $oldd->{'dom'} && &self_signed_cert($d) &&
 if ($d->{'ip'} ne $oldd->{'ip'} ||
     $d->{'dom'} ne $oldd->{'dom'} ||
     $d->{'home'} ne $oldd->{'home'}) {
-        # IP address or domain name has changed .. fix per-IP/per-domain SSL cert
+        # IP address or domain name has changed - fix per-IP/per-domain SSL cert
 	&modify_ipkeys($d, $oldd, \&get_miniserv_config,
 		       \&put_miniserv_config,
 		       \&restart_webmin_fully);
@@ -482,7 +483,7 @@ if ($d->{'ip'} ne $oldd->{'ip'} ||
 &sync_domain_tlsa_records($d);
 
 &release_lock_web($d);
-&register_post_action(\&restart_apache, 1) if ($rv);
+&register_post_action(\&restart_apache, &ssl_needs_apache_restart()) if ($rv);
 return $rv;
 }
 
@@ -507,7 +508,7 @@ local $tmpl = &get_template($d->{'template'});
 if ($virt) {
 	&delete_web_virtual_server($virt);
 	&$second_print($text{'setup_done'});
-	&register_post_action(\&restart_apache, 1);
+	&register_post_action(\&restart_apache, &ssl_needs_apache_restart());
 	}
 else {
 	&$second_print($text{'delete_noapache'});
@@ -573,7 +574,7 @@ if ($d->{'ssl_same'} && !&check_domain_certificate($d->{'dom'}, $d)) {
 
 &release_lock_web($d);
 &$second_print($text{'setup_done'});
-&register_post_action(\&restart_apache, 1);
+&register_post_action(\&restart_apache, &ssl_needs_apache_restart());
 return 1;
 }
 
@@ -791,37 +792,38 @@ else {
 # change the actual <Virtualhost> lines!
 sub restore_ssl
 {
+local ($d, $file, $opts) = @_;
 &$first_print($text{'restore_sslcp'});
-&obtain_lock_web($_[0]);
+&obtain_lock_web($d);
 my $rv = 1;
 
 # Restore the Apache directives
-local ($virt, $vconf) = &get_apache_virtual($_[0]->{'dom'},
-					    $_[0]->{'web_sslport'});
+local ($virt, $vconf) = &get_apache_virtual($d->{'dom'},
+					    $d->{'web_sslport'});
 if ($virt) {
-	local $srclref = &read_file_lines($_[1], 1);
+	local $srclref = &read_file_lines($file, 1);
 	local $dstlref = &read_file_lines($virt->{'file'});
 	splice(@$dstlref, $virt->{'line'}+1,
 	       $virt->{'eline'}-$virt->{'line'}-1,
 	       @$srclref[1 .. @$srclref-2]);
 
-	if ($_[5]->{'home'} && $_[5]->{'home'} ne $_[0]->{'home'}) {
+	if ($_[5]->{'home'} && $_[5]->{'home'} ne $d->{'home'}) {
 		# Fix up any DocumentRoot or other file-related directives
 		local $i;
 		foreach $i ($virt->{'line'} ..
 			    $virt->{'line'}+scalar(@$srclref)-1) {
 			$dstlref->[$i] =~
-			    s/\Q$_[5]->{'home'}\E/$_[0]->{'home'}/g;
+			    s/\Q$_[5]->{'home'}\E/$d->{'home'}/g;
 			}
 		}
 	&flush_file_lines($virt->{'file'});
 	undef(@apache::get_config_cache);
 
 	# Copy suexec-related directives from non-SSL virtual host
-	($virt, $vconf) = &get_apache_virtual($_[0]->{'dom'},
-					      $_[0]->{'web_sslport'});
-	local ($nvirt, $nvconf) = &get_apache_virtual($_[0]->{'dom'},
-						      $_[0]->{'web_port'});
+	($virt, $vconf) = &get_apache_virtual($d->{'dom'},
+					      $d->{'web_sslport'});
+	local ($nvirt, $nvconf) = &get_apache_virtual($d->{'dom'},
+						      $d->{'web_port'});
 	if ($nvirt && $virt) {
 		local @vals = &apache::find_directive("SuexecUserGroup",
 						      $nvconf);
@@ -834,45 +836,49 @@ if ($virt) {
 
 	# Restore the cert and key, if any and if saved
 	local $cert = &apache::find_directive("SSLCertificateFile", $vconf, 1);
-	if ($cert && -r "$_[1]_cert") {
+	if ($cert && -r $file."_cert") {
 		&lock_file($cert);
 		&set_ownership_permissions(
-			$_[0]->{'uid'}, undef, undef, "$_[1]_cert");
-		&copy_source_dest_as_domain_user($_[0], "$_[1]_cert", $cert);
+			$d->{'uid'}, undef, undef, $file."_cert");
+		&copy_source_dest_as_domain_user($d, $file."_cert", $cert);
 		&unlock_file($cert);
 		}
 	local $key = &apache::find_directive("SSLCertificateKeyFile", $vconf,1);
-	if ($key && -r "$_[1]_key" && $key ne $cert) {
+	if ($key && -r $file."_key" && $key ne $cert) {
 		&lock_file($key);
 		&set_ownership_permissions(
-			$_[0]->{'uid'}, undef, undef, "$_[1]_key");
-		&copy_source_dest_as_domain_user($_[0], "$_[1]_key", $key);
+			$d->{'uid'}, undef, undef, $file."_key");
+		&copy_source_dest_as_domain_user($d, $file."_key", $key);
 		&unlock_file($key);
 		}
 	local $ca = &apache::find_directive("SSLCACertificateFile", $vconf, 1);
-	if ($ca && -r "$_[1]_ca") {
+	if ($ca && -r $file."_ca") {
 		&lock_file($ca);
 		&set_ownership_permissions(
-			$_[0]->{'uid'}, undef, undef, "$_[1]_ca");
-		&copy_source_dest_as_domain_user($_[0], "$_[1]_ca", $ca);
+			$d->{'uid'}, undef, undef, $file."_ca");
+		&copy_source_dest_as_domain_user($d, $file."_ca", $ca);
 		&unlock_file($ca);
 		}
 
 	# Re-setup any SSL passphrase
-	&save_domain_passphrase($_[0]);
+	&save_domain_passphrase($d);
 
 	# Re-save PHP mode, in case it changed
-	&save_domain_php_mode($_[0], &get_domain_php_mode($_[0]));
+	&save_domain_php_mode($d, &get_domain_php_mode($d));
 
 	# Add Require all granted directive if this system is Apache 2.4
-	&add_require_all_granted_directives($_[0], $_[0]->{'web_sslport'});
+	&add_require_all_granted_directives($d, $d->{'web_sslport'});
 
 	# Fix Options lines
-	my ($virt, $vconf, $conf) = &get_apache_virtual($_[0]->{'dom'},
-							$_[0]->{'web_sslport'});
+	my ($virt, $vconf, $conf) = &get_apache_virtual($d->{'dom'},
+							$d->{'web_sslport'});
 	if ($virt) {
 		&fix_options_directives($vconf, $conf, 0);
 		}
+
+	# Sync cert to Dovecot and Postfix
+	&sync_dovecot_ssl_cert($d, 1);
+	&sync_postfix_ssl_cert($d, $d->{'virt'});
 
 	&$second_print($text{'setup_done'});
 	}
@@ -881,7 +887,7 @@ else {
 	$rv = 0;
 	}
 
-&release_lock_web($_[0]);
+&release_lock_web($d);
 &register_post_action(\&restart_apache);
 return $rv;
 }
@@ -1099,7 +1105,7 @@ else {
 &lock_file(@pps_str ? $pps_str[0]->{'file'} : $conf->[0]->{'file'});
 &apache::save_directive("SSLPassPhraseDialog", \@pps, $conf, $conf);
 &flush_file_lines();
-&register_post_action(\&restart_apache, 1);
+&register_post_action(\&restart_apache, &ssl_needs_apache_restart());
 }
 
 # check_cert_key_match(cert-text, key-text)
@@ -1155,10 +1161,10 @@ $h || return "Unknown SSL file type $type";
 local @lines = grep { /\S/ } split(/\r?\n/, $data);
 local $begin = quotemeta("-----BEGIN ").$h.quotemeta("-----");
 local $end = quotemeta("-----END ").$h.quotemeta("-----");
-$lines[0] =~ /^$begin$/ || return "Data does not start with line ".
-				  "-----BEGIN $h-----";
-$lines[$#lines] =~ /^$end$/ || return "Data does not end with line ".
-				      "-----END $h-----";
+$lines[0] =~ /^$begin$/ ||
+	return "Data starts with $lines[0] , but expected -----BEGIN $h-----";
+$lines[$#lines] =~ /^$end$/ ||
+	return "Data ends with $lines[$#lines] , but expected -----END $h-----";
 for(my $i=1; $i<$#lines; $i++) {
 	$lines[$i] =~ /^[A-Za-z0-9\+\/=]+\s*$/ ||
 	    ($type eq 'ca' && ($lines[$i] =~ /^$begin$/ ||
@@ -1175,6 +1181,7 @@ sub cert_pem_data
 {
 local ($d) = @_;
 local $data = &read_file_contents_as_domain_user($d, $d->{'ssl_cert'});
+$data =~ s/\r//g;
 if ($data =~ /(-----BEGIN\s+CERTIFICATE-----\n([A-Za-z0-9\+\/=\n\r]+)-----END\s+CERTIFICATE-----)/) {
 	return $1;
 	}
@@ -1188,6 +1195,7 @@ sub key_pem_data
 local ($d) = @_;
 local $data = &read_file_contents_as_domain_user($d, $d->{'ssl_key'} ||
 						     $d->{'ssl_cert'});
+$data =~ s/\r//g;
 if ($data =~ /(-----BEGIN\s+RSA\s+PRIVATE\s+KEY-----\n([A-Za-z0-9\+\/=\n\r]+)-----END\s+RSA\s+PRIVATE\s+KEY-----)/) {
 	return $1;
 	}
@@ -1271,8 +1279,11 @@ local %miniserv;
 local @ipkeys = &webmin::get_ipkeys(\%miniserv);
 local @newipkeys;
 foreach my $ipk (@ipkeys) {
-	my $search = $d->{'virt'} ? $d->{'ip'} : $d->{'dom'};
-	if (&indexof($search, @{$ipk->{'ips'}}) < 0) {
+	my $del = &indexof($d->{'dom'}, @{$ipk->{'ips'}}) >= 0;
+	if ($d->{'virt'} && !$del) {
+		$del = &indexof($d->{'ip'}, @{$ipk->{'ips'}}) >= 0;
+		}
+	if (!$del) {
 		push(@newipkeys, $ipk);
 		}
 	}
@@ -1332,22 +1343,41 @@ return @dirs;
 sub check_certificate_data
 {
 local ($data) = @_;
+my @lines = split(/\r?\n/, $data);
+my @certs;
+my $inside = 0;
+foreach my $l (@lines) {
+	if ($l =~ /^-+BEGIN/) {
+		push(@certs, $l."\n");
+		$inside = 1;
+		}
+	elsif ($l =~ /^-+END/) {
+		$inside || return $text{'cert_eoutside'};
+		$certs[$#certs] .= $l."\n";
+		$inside = 0;
+		}
+	elsif ($inside) {
+		$certs[$#certs] .= $l."\n";
+		}
+	}
+$inside && return $text{'cert_einside'};
+@certs || return $text{'cert_ecerts'};
 local $temp = &transname();
-&open_tempfile(CERTDATA, ">$temp", 0, 1);
-&print_tempfile(CERTDATA, $data);
-&close_tempfile(CERTDATA);
-local $out = &backquote_command("openssl x509 -in ".quotemeta($temp)." -issuer -subject -enddate 2>&1");
-local $ex = $?;
-&unlink_file($temp);
-if ($ex) {
-	return "<tt>".&html_escape($out)."</tt>";
+foreach my $cdata (@certs) {
+	&open_tempfile(CERTDATA, ">$temp", 0, 1);
+	&print_tempfile(CERTDATA, $cdata);
+	&close_tempfile(CERTDATA);
+	local $out = &backquote_command("openssl x509 -in ".quotemeta($temp)." -issuer -subject -enddate 2>&1");
+	local $ex = $?;
+	&unlink_file($temp);
+	if ($ex) {
+		return "<tt>".&html_escape($out)."</tt>";
+		}
+	elsif ($out !~ /subject\s*=\s*.*(CN|O)\s*=/) {
+		return $text{'cert_esubject'};
+		}
 	}
-elsif ($out !~ /subject\s*=\s*.*(CN|O)=/) {
-	return $text{'cert_esubject'};
-	}
-else {
-	return undef;
-	}
+return undef;
 }
 
 # default_certificate_file(&domain, "cert"|"key"|"ca"|"combined"|"everything")
@@ -1572,6 +1602,7 @@ $main::got_lock_ssl-- if ($main::got_lock_ssl);
 sub find_matching_certificate
 {
 local ($d) = @_;
+return if ($config{'nolink_certs'});
 local @sslclashes = grep { $_->{'ip'} eq $d->{'ip'} &&
 			   $_->{'ssl'} &&
 			   $_->{'id'} ne $d->{'id'} &&
@@ -1621,6 +1652,7 @@ if (!-r $d->{'ssl_cert'} && !-r $d->{'ssl_key'}) {
 		}
 	&unlock_file($d->{'ssl_cert'});
 	&unlock_file($d->{'ssl_key'});
+	delete($d->{'ssl_chain'});	# No longer valid
 	return 1;
 	}
 return 0;
@@ -1646,6 +1678,7 @@ foreach my $k ('cert', 'key', 'chain') {
 		}
 	}
 delete($d->{'ssl_same'});
+&sync_combined_ssl_cert($d);
 if ($d->{'web'}) {
 	local ($ovirt, $ovconf, $conf) = &get_apache_virtual(
 		$d->{'dom'}, $d->{'web_sslport'});
@@ -1679,14 +1712,26 @@ foreach $od (&get_domain_by("ssl_same", $d->{'id'})) {
 	}
 }
 
+# disable_letsencrypt_renewal(&domain)
+# If Let's Encrypt renewal is enabled for a domain, turn it off
+sub disable_letsencrypt_renewal
+{
+local ($d) = @_;
+if ($d->{'letsencrypt_renew'}) {
+	delete($d->{'letsencrypt_renew'});
+	&save_domain($d);
+	}
+}
+
 # sync_dovecot_ssl_cert(&domain, [enable-or-disable])
 # If supported, configure Dovecot to use this domain's SSL cert for its IP
 sub sync_dovecot_ssl_cert
 {
 local ($d, $enable) = @_;
+local $tmpl = &get_template($d->{'template'});
 
 # Check if dovecot is installed and supports this feature
-return undef if (!$config{'dovecot_ssl'});
+return undef if (!$tmpl->{'web_dovecot_ssl'});
 return undef if (!&foreign_installed("dovecot"));
 &foreign_require("dovecot");
 my $ver = &dovecot::get_dovecot_version();
@@ -1702,6 +1747,7 @@ return undef if ($ssldis =~ /yes/i);
 my $cfile = &dovecot::get_config_file();
 &lock_file($cfile);
 
+local $chain = &get_website_ssl_file($d, "ca");
 if ($d->{'virt'}) {
 	# Domain has it's own IP
 
@@ -1709,10 +1755,15 @@ if ($d->{'virt'}) {
 	my @loc = grep { $_->{'name'} eq 'local' &&
 			 $_->{'section'} } @$conf;
 	my ($l) = grep { $_->{'value'} eq $d->{'ip'} } @loc;
-	my $imap;
+	my ($imap, $pop3);
 	if ($l) {
 		($imap) = grep { $_->{'name'} eq 'protocol' &&
 				 $_->{'value'} eq 'imap' &&
+				 $_->{'enabled'} &&
+				 $_->{'sectionname'} eq 'local' &&
+				 $_->{'sectionvalue'} eq $d->{'ip'} } @$conf;
+		($pop3) = grep { $_->{'name'} eq 'protocol' &&
+				 $_->{'value'} eq 'pop3' &&
 				 $_->{'enabled'} &&
 				 $_->{'sectionname'} eq 'local' &&
 				 $_->{'sectionvalue'} eq $d->{'ip'} } @$conf;
@@ -1720,7 +1771,6 @@ if ($d->{'virt'}) {
 
 	if ($enable) {
 		# Needs a cert for the IP
-		local $chain = &get_website_ssl_file($d, "ca");
 		if (!$l) {
 			$l = { 'name' => 'local',
 			       'value' => $d->{'ip'},
@@ -1768,6 +1818,43 @@ if ($d->{'virt'}) {
 					}
 				}
 			}
+		if (!$pop3) {
+			$pop3 = { 'name' => 'protocol',
+				  'value' => 'pop3',
+				  'members' => [
+					{ 'name' => 'ssl_cert',
+					  'value' => "<".$d->{'ssl_cert'} },
+					{ 'name' => 'ssl_key',
+					  'value' => "<".$d->{'ssl_key'} },
+					],
+				  'indent' => 1,
+				  'file' => $l->{'file'},
+				  'line' => $l->{'line'} + 1,
+				  'eline' => $l->{'line'} };
+			if ($chain) {
+				push(@{$pop3->{'members'}},
+				     { 'name' => 'ssl_ca',
+				       'value' => "<".$chain });
+				}
+			&dovecot::save_section($conf, $pop3);
+			push(@{$l->{'members'}}, $pop3);
+			}
+		else {
+			eval {
+				local $main::error_must_die = 1;
+				&dovecot::save_directive($l->{'members'},
+					"ssl_cert", "<".$d->{'ssl_cert'},
+					"protocol", "pop3");
+				&dovecot::save_directive($l->{'members'},
+					"ssl_key", "<".$d->{'ssl_key'},
+					"protocol", "pop3");
+				if ($chain) {
+					&dovecot::save_directive(
+						$l->{'members'}, "ssl_ca",
+						"<".$chain, "protocol", "pop3");
+					}
+				}
+			}
 		&flush_file_lines($imap->{'file'}, undef, 1);
 		}
 	else {
@@ -1810,6 +1897,7 @@ else {
 			$l->{'line'} = $l->{'eline'} = scalar(@$lref);
 			&dovecot::save_section($conf, $l);
 			push(@$conf, $l);
+			&flush_file_lines($l->{'file'}, undef, 1);
 			}
 		}
 	elsif (!$enable && @myloc) {
@@ -1830,6 +1918,7 @@ else {
 			&dovecot::save_directive($l->{'members'},
                                         "ssl_key", "<".$d->{'ssl_key'});
 			}
+		&flush_file_lines($l->{'file'}, undef, 1);
 		}
 	}
 &unlock_file($cfile);
@@ -1871,7 +1960,8 @@ my ($imap) = grep { $_->{'name'} eq 'protocol' &&
 return ( ) if (!$imap);
 my %mems = map { $_->{'name'}, $_->{'value'} } @{$imap->{'members'}};
 return ( ) if (!$mems{'ssl_cert'});
-my @rv = ( $mems{'ssl_cert'}, $mems{'ssl_key'}, undef, $d->{'ip'}, undef );
+my @rv = ( $mems{'ssl_cert'}, $mems{'ssl_key'}, $mems{'ssl_ca'},
+	   $d->{'ip'}, undef );
 foreach my $r (@rv) {
 	$r =~ s/^<//;
 	}
@@ -1889,7 +1979,8 @@ my ($l) = grep { $_->{'value'} eq $d->{'dom'} } @loc;
 return ( ) if (!$l);
 my %mems = map { $_->{'name'}, $_->{'value'} } @{$l->{'members'}};
 return ( ) if (!$mems{'ssl_cert'});
-my @rv = ( $mems{'ssl_cert'}, $mems{'ssl_key'}, undef, undef, $d->{'dom'} );
+my @rv = ( $mems{'ssl_cert'}, $mems{'ssl_key'}, $mems{'ssl_ca'},
+	   undef, $d->{'dom'} );
 foreach my $r (@rv) {
 	$r =~ s/^<//;
 	}
@@ -1901,17 +1992,18 @@ return @rv;
 sub sync_postfix_ssl_cert
 {
 local ($d, $enable) = @_;
+local $tmpl = &get_template($d->{'template'});
 
 # Check if Postfix is in use
 return undef if ($config{'mail_system'} != 0);
-return undef if (!$config{'postfix_ssl'});
+return undef if (!$tmpl->{'web_postfix_ssl'});
 
 # Check if using SSL globally
 &foreign_require("postfix");
 local $cfile = &postfix::get_real_value("smtpd_tls_cert_file");
 local $kfile = &postfix::get_real_value("smtpd_tls_key_file");
 local $cafile = &postfix::get_real_value("smtpd_tls_CAfile");
-return undef if ($enable && (!$cfile || !$kfile));
+return undef if ($enable && (!$cfile || !$kfile) && !&domain_has_ssl($d));
 
 # Find the existing master file entry
 &lock_file($postfix::config{'postfix_master'});
@@ -1919,12 +2011,14 @@ local $master = &postfix::get_master_config();
 local $defip = &get_default_ip();
 
 # Work out which flags are needed
-local $chain = $s->{'ssl'} ? &get_website_ssl_file($d, 'ca') : $cafile;
+local $chain = &domain_has_ssl($d) ? &get_website_ssl_file($d, 'ca') : $cafile;
 local @flags = ( [ "smtpd_tls_cert_file",
-		   $d->{'ssl'} ? $d->{'ssl_cert'} : $cfile ],
+		   &domain_has_ssl($d) ? $d->{'ssl_cert'} : $cfile ],
 		 [ "smtpd_tls_key_file",
-		   $d->{'ssl'} ? $d->{'ssl_key'} : $kfile ] );
+		   &domain_has_ssl($d) ? $d->{'ssl_key'} : $kfile ] );
 push(@flags, [ "smtpd_tls_CAfile", $chain ]) if ($chain);
+push(@flags, [ "smtpd_tls_security_level", "may" ]);
+push(@flags, [ "myhostname", $d->{'dom'} ]);
 
 local $changed = 0;
 foreach my $pfx ('smtp', 'submission') {
@@ -1969,6 +2063,7 @@ foreach my $pfx ('smtp', 'submission') {
 				$already->{'command'} .=
 					" -o ".$f->[0]."=".$f->[1];
 				}
+			$already->{'command'} =~ s/-o smtpd_(client|helo|sender)_restrictions=\$mua_client_restrictions\s+//g;
 			&postfix::create_master($already);
 			$changed = 1;
 
@@ -2092,14 +2187,14 @@ foreach my $full ("www.".$d->{'dom'}, "mail.".$d->{'dom'},
 			push(@rv, $full);
 			}
 		}
-	elsif (&to_ipaddress($full)) {
+	if (&to_ipaddress($full)) {
 		push(@rv, $full);
 		}
 	}
 if (!$d->{'alias'}) {
 	# Add aliases of this domain that have SSL enabled
 	foreach my $alias (&get_domain_by("alias", $d->{'id'})) {
-		if (&domain_has_website($alias)) {
+		if (&domain_has_website($alias) && !$alias->{'disabled'}) {
 			push(@rv, &get_hostnames_for_ssl($alias));
 			}
 		}
@@ -2137,10 +2232,10 @@ foreach my $d (&list_domains()) {
 	next if (time() - $d->{'letsencrypt_last'} < 60*60);
 
 	# Is it time? Either the user-chosen number of months has passed, or
-	# the cert is within 5 days of expiry
+	# the cert is within 21 days of expiry
 	my $age = time() - $ltime;
 	if ($age >= $d->{'letsencrypt_renew'} * 30 * 24 * 60 * 60 ||
-	    $expiry && $expiry - time() < 5 * 24 * 60 * 60) {
+	    $expiry && $expiry - time() < 21 * 24 * 60 * 60) {
 		my ($ok, $err, $dnames) = &renew_letsencrypt_cert($d);
 		my ($subject, $body);
 		if (!$ok) {
@@ -2194,8 +2289,10 @@ if ($merr) {
 	return (0, $merr, \@dnames);
 	}
 else {
+	my $before = &before_letsencrypt_website($d);
 	($ok, $cert, $key, $chain) =
 		&request_domain_letsencrypt_cert($d, \@dnames);
+	&after_letsencrypt_website($d, $before);
 	}
 
 my ($subject, $body);
@@ -2312,9 +2409,9 @@ my ($d) = @_;
 my $combfile = &default_certificate_file($d, 'combined');
 &lock_file($combfile);
 &open_tempfile_as_domain_user($d, COMB, ">$combfile");
-&print_tempfile(COMB, &read_file_contents($d->{'ssl_cert'}));
+&print_tempfile(COMB, &read_file_contents($d->{'ssl_cert'})."\n");
 if (-r $d->{'ssl_chain'}) {
-	&print_tempfile(COMB, &read_file_contents($d->{'ssl_chain'}));
+	&print_tempfile(COMB, &read_file_contents($d->{'ssl_chain'})."\n");
 	}
 &close_tempfile_as_domain_user($d, COMB);
 &unlock_file($combfile);
@@ -2325,10 +2422,10 @@ $d->{'ssl_combined'} = $combfile;
 my $everyfile = &default_certificate_file($d, 'everything');
 &lock_file($everyfile);
 &open_tempfile_as_domain_user($d, COMB, ">$everyfile");
-&print_tempfile(COMB, &read_file_contents($d->{'ssl_key'}));
-&print_tempfile(COMB, &read_file_contents($d->{'ssl_cert'}));
+&print_tempfile(COMB, &read_file_contents($d->{'ssl_key'})."\n");
+&print_tempfile(COMB, &read_file_contents($d->{'ssl_cert'})."\n");
 if (-r $d->{'ssl_chain'}) {
-	&print_tempfile(COMB, &read_file_contents($d->{'ssl_chain'}));
+	&print_tempfile(COMB, &read_file_contents($d->{'ssl_chain'})."\n");
 	}
 &close_tempfile_as_domain_user($d, COMB);
 &unlock_file($everyfile);
@@ -2393,24 +2490,25 @@ if ($before->{'redirs'}) {
 &pop_all_print();
 }
 
-# request_domain_letsencrypt_cert(&domain, &dnames, [staging], [size])
+# request_domain_letsencrypt_cert(&domain, &dnames, [staging], [size], [mode])
 # Attempts to request a Let's Encrypt cert for a domain, trying both web and
 # DNS modes if possible
 sub request_domain_letsencrypt_cert
 {
-my ($d, $dnames, $staging, $size) = @_;
+my ($d, $dnames, $staging, $size, $mode) = @_;
 $size ||= $config{'key_size'};
 &foreign_require("webmin");
 my $phd = &public_html_dir($d);
 my ($ok, $cert, $key, $chain);
 my @errs;
-if (&domain_has_website($d)) {
+if (&domain_has_website($d) && (!$mode || $mode eq "web")) {
 	# Try using website first
 	($ok, $cert, $key, $chain) = &webmin::request_letsencrypt_cert(
 		$dnames, $phd, $d->{'emailto'}, $size, "web", $staging);
 	push(@errs, &text('letsencrypt_eweb', $cert)) if (!$ok);
 	}
-if (!$ok && &get_webmin_version() >= 1.834 && $d->{'dns'}) {
+if (!$ok && &get_webmin_version() >= 1.834 && $d->{'dns'} &&
+    (!$mode || $mode eq "dns")) {
 	# Fall back to DNS
 	($ok, $cert, $key, $chain) = &webmin::request_letsencrypt_cert(
 		$dnames, undef, $d->{'emailto'}, $size, "dns", $staging);
@@ -2429,6 +2527,25 @@ if (!$ok) {
 else {
 	return ($ok, $cert, $key, $chain);
 	}
+}
+
+# validate_letsencrypt_config(&domain)
+# Returns a list of validation errors that might prevent Let's Encrypt
+sub validate_letsencrypt_config
+{
+my ($d) = @_;
+my @rv;
+foreach my $f ("web", "dns") {
+	if ($d->{$f} && $config{$f}) {
+		my $vfunc = "validate_$f";
+		my $err = &$vfunc($d);
+		if ($err) {
+			push(@rv, { 'desc' => $text{'feature_'.$f},
+				    'error' => $err });
+			}
+		}
+	}
+return @rv;
 }
 
 # setup_domain_ipkeys(&domain, [&tmpl], [service])
@@ -2465,6 +2582,14 @@ if ((!$svc || $svc eq 'usermin') && &foreign_installed("usermin")) {
 		       \&usermin::put_usermin_miniserv_config,
 		       \&restart_usermin);
 	}
+}
+
+# ssl_needs_apache_restart()
+# Returns 1 if an SSL cert change needs an Apache restart
+sub ssl_needs_apache_restart
+{
+&require_apache();
+return $apache::httpd_modules{'core'} >= 2.4 ? 0 : 1;
 }
 
 $done_feature_script{'ssl'} = 1;

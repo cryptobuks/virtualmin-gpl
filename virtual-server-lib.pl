@@ -24,7 +24,6 @@ if (!$done_virtual_server_lib_funcs) {
 
 # Can this user only view mailboxes in one domain? If so, we use a special UI
 $single_domain_mode = !$main::nosingledomain_virtualmin_mode &&
-		      $current_theme ne "virtual-server-theme" &&
 		      $access{'domains'} =~ /^\d+$/ &&
 		      !$access{'edit'} && !$access{'create'} &&
 		      !$access{'stop'} && !$access{'local'} ?
@@ -101,7 +100,7 @@ $spamclear_cmd = "$module_config_directory/spamclear.pl";
 $dynip_cron_cmd = "$module_config_directory/dynip.pl";
 $ratings_cron_cmd = "$module_config_directory/sendratings.pl";
 $collect_cron_cmd = "$module_config_directory/collectinfo.pl";
-$fcgiclear_cron_cmd = "$module_config_directory/fcgiclear.pl";
+$fcgiclear_cron_cmd = "$module_config_directory/fcgiclear.pl"; # Unused
 $maillog_cron_cmd = "$module_config_directory/maillog.pl";
 $spamconfig_cron_cmd = "$module_config_directory/spamconfig.pl";
 $scriptwarn_cron_cmd = "$module_config_directory/scriptwarn.pl";
@@ -130,6 +129,9 @@ $custom_shells_file = "$module_config_directory/custom-shells";
 			 "$module_root_directory/pro/scripts",
 		       );
 $script_log_directory = &cache_file_path("scriptlog");
+if (!-d $script_log_directory) {
+	$script_log_directory = "$module_config_directory/scriptlog";
+	}
 $scripts_unavail_file = &cache_file_path("scriptsunavail");
 
 @styles_directories = ( "$module_config_directory/styles",
@@ -143,7 +145,7 @@ $styles_unavail_file = "$module_config_directory/stylesunavail";
 @plan_restrictions = ('nodbname', 'norename', 'forceunder', 'safeunder',
 		      'migrate');
 
-@reseller_modules = ("webminlog", "mailboxes", "bind8", "syslog");
+@reseller_modules = ("webminlog", "mailboxes", "bind8", "syslog", "filemin");
 
 $reseller_group_name = "resellers";
 
@@ -172,7 +174,7 @@ if (!$virtualmin_pro) {
 			'email', 'custom', 'scripts',
 			$virtualmin_pro ? ( 'styles' ) : ( ),
 		        'scheds',
-			&has_ftp_chroot() ? ( 'chroot' ) : ( ),
+			$config{'ftp'} ? ( 'chroot' ) : ( ),
 			'mailserver' );
 
 @limit_types = ("mailboxlimit", "aliaslimit", "dbslimit", "domslimit",
@@ -196,8 +198,8 @@ $spamclear_file = "$module_config_directory/spamclear";
 $plans_dir = "$module_config_directory/plans";
 
 $extra_admins_dir = "$module_config_directory/admins";
-@all_possible_php_versions = (4, 5, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9,
-			      "7.0", 7.1);
+@all_possible_php_versions = (5, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9,
+			      "7.0", 7.1, 7.2, 7.3);
 @s3_perl_modules = ( "S3::AWSAuthConnection", "S3::QueryStringAuthGenerator" );
 $max_php_fcgid_children = 20;
 $s3_upload_tries = $config{'upload_tries'} || 3;

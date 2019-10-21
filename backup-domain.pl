@@ -18,19 +18,19 @@ servers are included in the backup. The C<--domain> parameter followed by a
 domain name can be given multiple times, to select more than one server.
 
 Alternately, virtual servers can be selected with the C<--user> flag followed
-by an administrator's username, or C<--plan> followed by a plan name. In both
-cases, all sub-servers will be included too.
+by an administrator's username, C<--plan> followed by a plan name, or
+C<-reseller> followed by a reseller name. In all cases, all sub-servers will be
+included too.
 
 Typically the C<--all-features> option will be used to include all virtual server
 features in the backup, but you can instead use the C<--feature> option one or
 more times to control exactly what gets included. In this case, it is wise to
 use at least C<--feature dir> to include each server's home directory.
 
-The C<--separate> option tells the backup program to create a separate file for
-each virtual server. The C<--newformat> also causes multiple files to be created,
-but using the format supported by Virtualmin versions 2.86 and above which
-puts all information into each domain's home directory, and thus avoids the
-need to create a large file in C</tmp> during the backup process.
+The C<--newformat> option tells the backup program to create a separate file for
+each virtual server. As long as the entire domain is being backed up, this 
+format also uses less temporary space as all databases and other additional
+files are included in the home directory archive.
 
 Using the C<--ignore-errors> option means than any errors
 encountered backing up one feature or server will be reported and ignored,
@@ -115,6 +115,11 @@ while(@ARGV > 0) {
 		}
 	elsif ($a eq "--user") {
 		push(@users, shift(@ARGV));
+		}
+	elsif ($a eq "--reseller") {
+		defined(&list_resellers) ||
+			&usage("Your system does not support resellers");
+		push(@resellers, shift(@ARGV));
 		}
 	elsif ($a eq "--plan") {
 		$planname = shift(@ARGV);
@@ -225,6 +230,12 @@ while(@ARGV > 0) {
 		}
 	}
 @dests || usage("No destinations specified");
+if (@resellers) {
+	# Map resellers to domains
+	foreach $r (@resellers) {
+		push(@bdoms, map { $_->{'dom'} } &get_reseller_domains($r));
+		}
+	}
 @bdoms || @users || $all_doms || @plans || @vbs || $purge ||
 	&usage("No domains specified");
 if (@bdoms || @users || $all_doms) {
@@ -410,11 +421,12 @@ print "virtualmin backup-domain [--dest file]+\n";
 print "                         [--test]\n";
 print "                         [--domain name] | [--all-domains]\n";
 print "                         [--user name]\n";
+print "                         [--reseller name]\n";
 print "                         [--plan name]\n";
 print "                         [--feature name] | [--all-features]\n";
 print "                                            [--except-feature name]\n";
 print "                         [--ignore-errors]\n";
-print "                         [--separate] | [--newformat]\n";
+print "                         [--newformat]\n";
 print "                         [--onebyone]\n";
 print "                         [--strftime] [--purge days]\n";
 if (&has_incremental_tar()) {
@@ -436,6 +448,7 @@ print "Features must be specified using their short names, like web and dns.\n";
 print "\n";
 print "The destination can be one of :\n";
 print " - A local file, like /backup/yourdomain.com.tgz\n";
+print " - A local directory can be given while passing --newformat option, like /backup/\n";
 print " - An FTP destination, like ftp://login:pass\@server/backup/yourdomain.com.tgz\n";
 print " - An SSH destination, like ssh://login:pass\@server/backup/yourdomain.com.tgz\n";
 print " - An S3 bucket, like s3://accesskey:secretkey\@bucket\n";
