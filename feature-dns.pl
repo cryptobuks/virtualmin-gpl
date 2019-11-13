@@ -1231,7 +1231,7 @@ if (!$tmpl->{'dns_replace'} || $d->{'dns_submode'}) {
 	# Add DMARC record for domain, if defined and if it's not a sub-domain
 	if ($tmpl->{'dns_dmarc'} ne "none" &&
 	    !$d->{'dns_submode'}) {
-		local $str = &join_dmarc(&default_domain_dmarc($d));
+		local $str = &bind8::join_dmarc(&default_domain_dmarc($d));
 		&bind8::create_record($file, "_dmarc.".$withdot, undef,
 				      "IN", "TXT", "\"$str\"");
 		}
@@ -1588,19 +1588,30 @@ if ($d->{'dns_submode'}) {
 	}
 local %got;
 local $ip = $d->{'dns_ip'} || $d->{'ip'};
+local $ip6 = $d->{'dns_ip6'} || $d->{'ip6'};
 foreach my $r (@$recs) {
 	$got{uc($r->{'type'})}++;
 	}
 $d->{'dns_submode'} || $got{'SOA'} || return $text{'validate_ednssoa2'};
 $got{'A'} || return $text{'validate_ednsa2'};
+if ($d->{'virt6'}) {
+	$got{'AAAA'} || return $text{'validate_ednsa6'};
+	}
 if (&domain_has_website($d)) {
 	foreach my $n ($d->{'dom'}.'.', 'www.'.$d->{'dom'}.'.') {
 		my @nips = map { $_->{'values'}->[0] }
 			       grep { $_->{'type'} eq 'A' &&
 				      $_->{'name'} eq $n } @$recs;
+		my @nips6 = map { $_->{'values'}->[0] }
+			       grep { $_->{'type'} eq 'AAAA' &&
+				      $_->{'name'} eq $n } @$recs;
 		if (@nips && &indexof($ip, @nips) < 0) {
 			return &text('validate_ednsip', "<tt>$n</tt>",
 			    "<tt>".join(' or ', @nips)."</tt>", "<tt>$ip</tt>");
+			}
+		if ($d->{'virt6'} && @nips6 && &indexof($ip6, @nips6) < 0) {
+			return &text('validate_ednsip6', "<tt>$n</tt>",
+			  "<tt>".join(' or ', @nips6)."</tt>", "<tt>$ip6</tt>");
 			}
 		}
 	}
@@ -1777,6 +1788,7 @@ else {
 # Re-names this domain in named.conf to remove the .disabled suffix
 sub enable_dns
 {
+local ($d) = @_;
 if ($d->{'provision_dns'}) {
 	# Unlock on provisioning server
 	&$first_print($text{'enable_bind_provision'});
@@ -2855,7 +2867,7 @@ local @recs = &get_domain_dns_records($d);
 foreach my $r (@recs) {
 	if (($r->{'type'} eq 'DMARC' || $r->{'type'} eq 'TXT') &&
 	    $r->{'name'} eq '_dmarc.'.$d->{'dom'}.'.') {
-		return &parse_dmarc(@{$r->{'values'}});
+		return &bind8::parse_dmarc(@{$r->{'values'}});
 		}
 	}
 return undef;
@@ -2878,7 +2890,7 @@ local ($r) = grep { ($_->{'type'} eq 'TXT' ||
 		     $_->{'type'} eq 'DMARC') &&
 		    $_->{'values'}->[0] =~ /^v=DMARC1/i &&
 		    $_->{'name'} eq '_dmarc.'.$d->{'dom'}.'.' } @$recs;
-local $str = $dmarc ? &join_dmarc($dmarc) : undef;
+local $str = $dmarc ? &bind8::join_dmarc($dmarc) : undef;
 if ($r && $dmarc) {
 	# Update record
 	&bind8::modify_record(
@@ -2917,62 +2929,6 @@ if (!defined($d->{'domain_dmarc_enabled'})) {
 	$d->{'domain_dmarc_enabled'} = $dmarc ? 1 : 0;
 	}
 return $d->{'domain_dmarc_enabled'};
-}
-
-# parse_dmarc(text, ...)
-# If some text looks like an DMARC TXT record, return a parsed hash ref
-sub parse_dmarc
-{
-&require_bind();
-return &bind8::parse_dmarc(@_) if (defined(&bind8::parse_dmarc));
-# XXX remove this once Webmin 1.740 is out for Virtualmin
-my $txt = join(" ", @_);
-if ($txt =~ /^v=dmarc1/i) {
-        local @w = split(/;\s*/, $txt);
-        local $dmarc = { };
-        foreach my $w (@w) {
-                $w = lc($w);
-                if ($w =~ /^(v|pct|ruf|rua|p|sp|adkim|aspf)=(\S+)$/i) {
-                        $dmarc->{$1} = $2;
-                        }
-                else {
-                        push(@{$dmarc->{'other'}}, $w);
-                        }
-                }
-        return $dmarc;
-        }
-return undef;
-}
-
-# join_dmarc(&dmarc)
-# Converts a DMARC record structure to a string, designed to be inserted into
-# quotes in a TXT record. If it is longer than 255 bytes, it will be split
-# into multiple quoted strings.
-sub join_dmarc
-{
-local ($dmarc) = @_;
-&require_bind();
-return &bind8::join_dmarc(@_) if (defined(&bind8::join_dmarc));
-local @rv = ( "v=DMARC1" );
-foreach my $s ("p", "pct", "ruf", "rua", "sp", "adkim", "aspf") {
-        if ($dmarc->{$s} ne '') {
-                push(@rv, $s."=".$dmarc->{$s});
-                }
-        }
-push(@rv, @{$dmarc->{'other'}});
-local @rvwords;
-local $rvword;
-while(@rv) {
-        my $w = shift(@rv);
-        if (length($rvword)+length($w)+1 >= 255) {
-                push(@rvwords, $rvword);
-                $rvword = "";
-                }
-        $rvword .= "; " if ($rvword);
-        $rvword .= $w;
-        }
-push(@rvwords, $rvword);
-return join("\" \"", @rvwords);
 }
 
 # get_domain_dns_records(&domain)

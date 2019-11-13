@@ -20,7 +20,7 @@ return "A semantic personal publishing platform with a focus on aesthetics, web 
 # script_wordpress_versions()
 sub script_wordpress_versions
 {
-return ( "5.2.3" );
+return ( "5.2.4" );
 }
 
 sub script_wordpress_category
@@ -361,7 +361,7 @@ sub has_wordpress_cli
 my ($opts) = @_;
 my $wp = &has_command("wp");
 return undef if (!$wp);
-return $wp if (!$opts || !defined(&get_php_cli_command));
+return $wp if (!$opts);
 my $cli = &get_php_cli_command($opts->{'phpver'});
 return $wp if (!$cli);
 return $cli." ".$wp;

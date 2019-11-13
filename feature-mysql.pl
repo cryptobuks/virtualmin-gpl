@@ -1796,7 +1796,6 @@ else {
 	# Create locally
 	local $myuser = &mysql_username($user);
 	local @hosts = &get_mysql_hosts($d);
-	local $qpass = &mysql_escape($pass);
 	local $h;
 	local $cfunc = sub {
 		foreach $h (@hosts) {
@@ -2317,11 +2316,14 @@ else {
 				}
 			}
 		# Re-populate user table
+		local %pmap = map { $_->{'mysql_user'}, $_->{'mysql_pass'} }
+				grep { $_->{'mysql_user'} }
+				  &list_domain_users($d, 1, 1, 1, 1);
 		foreach my $u (values %allusers) {
 			&execute_user_deletion_sql($d, undef, $u->[0]);
 			foreach my $h (@$hosts) {
 				&execute_user_creation_sql($d, $h, $u->[0],
-							   "'$u->[1]'");
+						   "'$u->[1]'", $pmap{$u->[0]});
 				&set_mysql_user_connections($d, $h, $u->[0], 1);
 				}
 			}
@@ -2886,7 +2888,7 @@ foreach my $host (&unique(map { $_->[0] } @{$rv->{'data'}})) {
 	if ($variant eq "mariadb" && &compare_versions($ver, "10.3") >= 0) {
 		return ("alter user '$user'\@'$host' identified by ".
 			($plainpass ? "'".&mysql_escape($plainpass)."'"
-				: $encpass));
+				    : $encpass));
 	}
 	elsif ($variant eq "mysql" && &compare_versions($ver, "8") >= 0 &&
 	    $plainpass) {
